@@ -51,6 +51,8 @@ pub struct Pad {
     /// a finger on the screen, where it is in the layout's size, from a
     /// handheld's touch screen.
     pub touch: Option<(f32, f32)>,
+    /// a finger on a second window's screen, across and down it from 0 to 1.
+    pub second_touch: Option<(f32, f32)>,
 }
 
 /// the pad a program around the frontend fills, in place of evdev's.

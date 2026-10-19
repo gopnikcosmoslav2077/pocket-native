@@ -6,6 +6,24 @@ use crate::settings::Layout;
 const TOP: [f32; 2] = [400.0, 240.0];
 const BOTTOM: [f32; 2] = [320.0, 240.0];
 
+/// the areas for the screens as the settings have them, or with a second
+/// window to show one by itself, the other filling the panel and the one
+/// there the whole of its own size, which the second window fills.
+pub fn shown(settings: &crate::settings::Settings) -> [Option<[i32; 4]>; 2] {
+    let size = zakuro_gpu::layout_size();
+    if !zakuro_gpu::second_window() {
+        return areas(settings.layout, settings.swapped, size);
+    }
+    zakuro_gpu::set_second_shows_top(settings.swapped);
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let (here, there) = if settings.swapped { (BOTTOM, TOP) } else { (TOP, BOTTOM) };
+    let scale = (width / here[0]).min(height / here[1]);
+    let (a, b) = ((here[0] * scale).round() as i32, (here[1] * scale).round() as i32);
+    let filled = Some([(size.0 as i32 - a) / 2, (size.1 as i32 - b) / 2, a, b]);
+    let alone = Some([0, 0, there[0] as i32, there[1] as i32]);
+    if settings.swapped { [alone, filled] } else { [filled, alone] }
+}
+
 pub fn areas(layout: Layout, swapped: bool, (width, height): (u32, u32)) -> [Option<[i32; 4]>; 2] {
     let (width, height) = (width as i32, height as i32);
     let (first, second) = if swapped { (BOTTOM, TOP) } else { (TOP, BOTTOM) };

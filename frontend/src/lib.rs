@@ -223,9 +223,9 @@ pub fn run(mut args: Vec<String>) {
     let slow: Option<f64> = std::env::var("ZAKURO_SLOW_FRAMES").ok().and_then(|ms| ms.parse().ok());
     loop {
         let began = Instant::now();
-        let (mut keys, axes, screen_touch) = {
+        let (mut keys, axes, screen_touch, second_touch) = {
             let pad = pad.lock().unwrap();
-            (pad.keys.clone(), pad.axes, pad.touch)
+            (pad.keys.clone(), pad.axes, pad.touch, pad.second_touch)
         };
         if input::QUIT.load(std::sync::atomic::Ordering::Relaxed) {
             log::info!("asked to quit");
@@ -285,7 +285,7 @@ pub fn run(mut args: Vec<String>) {
                     let mut canvas = Canvas::new(&font, PANEL);
                     menu.draw(&mut canvas, &settings, &game, &profile, &title);
                     overlay = Some(Arc::new(canvas.finish()));
-                    system.present_panel(layout::areas(settings.layout, settings.swapped, zakuro_gpu::layout_size()), None, overlay.clone(), settings.smooth, false);
+                    system.present_panel(layout::shown(&settings), None, overlay.clone(), settings.smooth, false);
                     menu_drawn = true;
                 }
                 std::thread::sleep(frame);
@@ -340,9 +340,15 @@ pub fn run(mut args: Vec<String>) {
         }
         let mut touching = keys.contains(&R2) || keys.contains(&R3);
         // a finger on the bottom screen where it is shown touches there, and
-        // moves the cursor along
-        if let Some((x, y)) = screen_touch {
-            if let Some([left, top, width, height]) = layout::areas(settings.layout, settings.swapped, zakuro_gpu::layout_size())[1] {
+        // moves the cursor along: on the panel, unless the bottom screen is on
+        // a second window by itself, or there
+        let bottom_alone = zakuro_gpu::second_window() && !settings.swapped;
+        if let Some((across, down)) = second_touch.filter(|_| bottom_alone) {
+            cursor = ((across * 320.0).clamp(0.0, 319.0), (down * 240.0).clamp(0.0, 239.0));
+            touching = true;
+        }
+        if let Some((x, y)) = screen_touch.filter(|_| !bottom_alone) {
+            if let Some([left, top, width, height]) = layout::shown(&settings)[1] {
                 let (across, down) = ((x - left as f32) / width as f32, (y - top as f32) / height as f32);
                 if (0.0..1.0).contains(&across) && (0.0..1.0).contains(&down) {
                     cursor = (across * 320.0, down * 240.0);
@@ -439,7 +445,7 @@ pub fn run(mut args: Vec<String>) {
                 }
                 (fps, fps_since) = (0, Instant::now());
             }
-            let areas = layout::areas(settings.layout, settings.swapped, zakuro_gpu::layout_size());
+            let areas = layout::shown(&settings);
             let pointer = areas[1].map(|[x, y, width, height]| (x + (cursor.0 * width as f32 / 320.0) as i32, y + (cursor.1 * height as f32 / 240.0) as i32));
             system.present_panel(areas, pointer, overlay.clone(), settings.smooth, interpolating);
         }

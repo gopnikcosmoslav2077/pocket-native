@@ -2,9 +2,9 @@
 # make_apk.sh <title id> <label> <libpocket_native.so> <libtitle.so> <out.apk> <keystore>
 #
 # Packages one game's app with the SDK's build tools, no Gradle: the
-# manifest linked against the platform, the two libraries in
-# lib/arm64-v8a, aligned and signed with the keystore, which is made the
-# first time. Keep the keystore: an update signed with another one will not
+# manifest linked against the platform, the second screen's Java class as
+# classes.dex, the two libraries in lib/arm64-v8a, aligned and signed with
+# the keystore, which is made the first time. Keep the keystore: an update signed with another one will not
 # install over the app, and the app would have to be uninstalled first,
 # saves and all.
 set -euo pipefail
@@ -26,6 +26,14 @@ sed -e "s|@PACKAGE@|$package|" -e "s|@VERSION_CODE@|$code|" -e "s|@VERSION@|$ver
     "$here/AndroidManifest.xml" > "$work/AndroidManifest.xml"
 
 "$BUILD_TOOLS_BIN/aapt2" link -o "$work/unaligned.apk" --manifest "$work/AndroidManifest.xml" -I "$ANDROID_JAR"
+# the one Java class, for the second screen, compiled against the platform
+# and turned into the APK's classes.dex
+mkdir -p "$work/classes" "$work/dex"
+mapfile -t sources < <(find "$here/java" -name '*.java')
+javac -nowarn --release 11 -classpath "$ANDROID_JAR" -d "$work/classes" "${sources[@]}"
+mapfile -t classes < <(find "$work/classes" -name '*.class')
+"$BUILD_TOOLS_BIN/d8" --min-api 30 --lib "$ANDROID_JAR" --output "$work/dex" "${classes[@]}"
+(cd "$work/dex" && zip -q "$work/unaligned.apk" classes.dex)
 mkdir -p "$work/lib/arm64-v8a"
 cp "$engine" "$work/lib/arm64-v8a/libpocket_native.so"
 cp "$title" "$work/lib/arm64-v8a/libtitle.so"

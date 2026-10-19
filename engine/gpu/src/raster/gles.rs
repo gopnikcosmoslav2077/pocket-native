@@ -992,6 +992,39 @@ extern "C" fn flipped(_fd: i32, sequence: u32, seconds: u32, microseconds: u32, 
 /// activity's, that the screens go to in place of the panel, null for none.
 static WINDOW: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
+/// a second native window, on a second display, that one of the screens
+/// goes to by itself, null for none, and the one the GL thread has a
+/// surface on, which set_second_window waits to see go before its window
+/// may go away.
+static SECOND_WINDOW: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static SECOND_IN_USE: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// whether the second window shows the top screen rather than the bottom.
+static SECOND_SHOWS_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// hands the renderer a second window, on a second display, for one of the
+/// screens by itself, or takes it back with null. Taking it back waits, a
+/// half second at most, for the GL thread to stop drawing into it, after
+/// which the caller may let the window go.
+pub fn set_second_window(window: *mut c_void) {
+    SECOND_WINDOW.store(window, std::sync::atomic::Ordering::Release);
+    if window.is_null() {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while !SECOND_IN_USE.load(std::sync::atomic::Ordering::Acquire).is_null() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// whether there is a second window for a screen to go to.
+pub fn second_window() -> bool {
+    !SECOND_WINDOW.load(std::sync::atomic::Ordering::Acquire).is_null()
+}
+
+/// which screen the second window shows, the top one or the bottom one.
+pub fn set_second_shows_top(top: bool) {
+    SECOND_SHOWS_TOP.store(top, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// hands the renderer a native window to show the screens in, an
 /// ANativeWindow on Android, before the title is loaded. The window has to
 /// stay valid as long as the renderer runs.
@@ -1493,6 +1526,184 @@ fn panel_turn(width: i32, height: i32) -> Option<i32> {
     }
 }
 
+/// the surface on the second window set_second_window gave, made, remade
+/// or let go as the window came, changed or went, and its size.
+fn second_surface(panel: &mut Panel) -> Option<(egl::types::EGLSurface, (i32, i32))> {
+    let wanted = SECOND_WINDOW.load(std::sync::atomic::Ordering::Acquire);
+    let egl = panel.egl;
+    if panel.second.is_some_and(|(_, window, _)| window != wanted) {
+        let (surface, ..) = panel.second.take().unwrap();
+        // SAFETY: a surface this made on the display, not current
+        unsafe { egl.egl.DestroySurface(egl.display, surface) };
+        SECOND_IN_USE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
+        log::info!("the second window went");
+    }
+    if panel.second.is_none() && !wanted.is_null() {
+        // SAFETY: a window set_second_window keeps valid until it takes it
+        // back, on the display and config the panel's context has
+        unsafe {
+            let surface = egl.egl.CreateWindowSurface(egl.display, egl.config, wanted as glutin_egl_sys::EGLNativeWindowType, std::ptr::null());
+            if surface.is_null() {
+                log::warn!("could not make a surface on the second window, 0x{:X}", egl.egl.GetError());
+                return None;
+            }
+            let (mut width, mut height) = (0, 0);
+            egl.egl.QuerySurface(egl.display, surface, egl::WIDTH as i32, &mut width);
+            egl.egl.QuerySurface(egl.display, surface, egl::HEIGHT as i32, &mut height);
+            // the panel's swap waits for its refresh already, this one need not
+            egl.egl.MakeCurrent(egl.display, surface, surface, egl.context);
+            egl.egl.SwapInterval(egl.display, 0);
+            egl.egl.MakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+            SECOND_IN_USE.store(wanted, std::sync::atomic::Ordering::Release);
+            log::info!("a screen goes to a {width}x{height} second window");
+            panel.second = Some((surface, wanted, (width, height)));
+        }
+    }
+    panel.second.map(|(surface, _, size)| (surface, size))
+}
+
+/// draws the second window's screen filling it, with the cursor over it,
+/// swaps it, and makes the panel's surface current again.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_second(
+    gl: &glow::Context,
+    panel: &mut Panel,
+    program: glow::Program,
+    linear: glow::Sampler,
+    empty: glow::VertexArray,
+    surface: egl::types::EGLSurface,
+    (width, height): (i32, i32),
+    parts: Vec<Part>,
+) -> Result<(), String> {
+    let egl = panel.egl;
+    if egl.egl.MakeCurrent(egl.display, surface, surface, egl.context) == 0 {
+        return Err(format!("could not make the second window current, 0x{:X}", egl.egl.GetError()));
+    }
+    // the screen's own size is the layout here, its area all of it
+    let layout = parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Surface { area, .. } | Part::Pixels { area, .. } => Some((area[2].max(1), area[3].max(1))),
+            _ => None,
+        })
+        .unwrap_or((320, 240));
+    let fit = Fit::new(layout, (width, height));
+    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+    gl.viewport(0, 0, width, height);
+    gl.disable(glow::SCISSOR_TEST);
+    gl.disable(glow::BLEND);
+    gl.color_mask(true, true, true, true);
+    gl.clear_color(0.0, 0.0, 0.0, 1.0);
+    gl.clear(glow::COLOR_BUFFER_BIT);
+    gl.use_program(Some(program));
+    gl.bind_vertex_array(Some(empty));
+    gl.active_texture(glow::TEXTURE0);
+    gl.bind_sampler(0, None);
+    gl.uniform_1_i32(gl.get_uniform_location(program, "source").as_ref(), 0);
+    let drawn = draw_parts(gl, panel, program, linear, None, height, fit, layout, parts);
+    let swapped = egl.egl.SwapBuffers(egl.display, surface) != 0;
+    egl.egl.MakeCurrent(egl.display, egl.surface, egl.surface, egl.context);
+    drawn?;
+    if !swapped {
+        log::warn!("could not swap the second window's buffers, 0x{:X}", egl.egl.GetError());
+    }
+    Ok(())
+}
+
+/// draws each part into the framebuffer bound, height pixels high, the
+/// layout fitted into it as fit says.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_parts(
+    gl: &glow::Context,
+    panel: &mut Panel,
+    program: glow::Program,
+    linear: glow::Sampler,
+    framebuffer: Option<glow::Framebuffer>,
+    height: i32,
+    fit: Fit,
+    layout: (i32, i32),
+    parts: Vec<Part>,
+) -> Result<(), String> {
+            for part in parts {
+                let (texture, screen, upright, area, smooth) = match part {
+                    Part::Cursor { x, y } => {
+                        let (x, y) = (fit.x(x), fit.y(y));
+                        gl.enable(glow::SCISSOR_TEST);
+                        for (size, shade) in [(7, 0.0), (5, 1.0)].map(|(size, shade)| ((size as f32 * fit.scale) as i32 | 1, shade)) {
+                            gl.scissor(x - size / 2, height - y - size / 2, size, size);
+                            gl.clear_color(shade, shade, shade, 1.0);
+                            gl.clear(glow::COLOR_BUFFER_BIT);
+                        }
+                        gl.disable(glow::SCISSOR_TEST);
+                        continue;
+                    }
+                    Part::Surface { texture, screen, area, smooth, top, picture } => {
+                        let area = fit.area(area);
+                        let step = match picture {
+                            Some(version) => panel.between.step((texture, version)),
+                            None => {
+                                if top {
+                                    panel.between.reset();
+                                }
+                                Step::Plain { keep: false }
+                            }
+                        };
+                        let keep = match step {
+                            Step::Plain { keep } => keep.then_some(0),
+                            Step::Halfway => Some(1),
+                        };
+                        if let Some(slot) = keep {
+                            panel.between.keep(gl, program, texture, screen, slot)?;
+                            gl.bind_framebuffer(glow::FRAMEBUFFER, framebuffer);
+                        }
+                        if let Step::Halfway = step {
+                            let gl_area = [area[0], height - area[1] - area[3], area[2], area[3]];
+                            panel.between.draw(gl, framebuffer, gl_area, smooth.then_some(linear))?;
+                            gl.use_program(Some(program));
+                            continue;
+                        }
+                        gl.use_program(Some(program));
+                        (texture, screen, 0, area, smooth)
+                    }
+                    Part::Overlay(overlay) => {
+                        draw_overlay(gl, panel, &overlay, height, fit.inset((layout.0 - 640) / 2, (layout.1 - 480) / 2))?;
+                        continue;
+                    }
+                    Part::Pixels { index, pixels, width, height, area, smooth } => {
+                        if index == 0 {
+                            panel.between.reset();
+                        }
+                        let texture = match panel.textures[index] {
+                            Some((texture, w, h)) if (w, h) == (width, height) => texture,
+                            made => {
+                                if let Some((old, ..)) = made {
+                                    gl.delete_texture(old);
+                                }
+                                let texture = gl.create_texture()?;
+                                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                                gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, width as i32, height as i32);
+                                panel.textures[index] = Some((texture, width, height));
+                                texture
+                            }
+                        };
+                        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                        gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, width as i32, height as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&pixels)));
+                        (texture, [width as i32, height as i32, 0, 0], 1, fit.area(area), smooth)
+                    }
+                };
+                let y = height - area[1] - area[3];
+                gl.viewport(area[0], y, area[2], area[3]);
+                gl.uniform_4_i32(gl.get_uniform_location(program, "area").as_ref(), area[0], y, area[2], area[3]);
+                gl.uniform_4_i32(gl.get_uniform_location(program, "screen").as_ref(), screen[0], screen[1], screen[2], screen[3]);
+                gl.uniform_1_i32(gl.get_uniform_location(program, "upright").as_ref(), upright);
+                gl.uniform_1_i32(gl.get_uniform_location(program, "smooth_scale").as_ref(), smooth as i32);
+                gl.bind_sampler(0, smooth.then_some(linear));
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
+    Ok(())
+}
+
 fn show(gl: GlRef, parts: Vec<Part>) -> Result<(), String> {
     disturb();
     PANEL.with(|panel| {
@@ -1576,83 +1787,22 @@ fn show(gl: GlRef, parts: Vec<Part>) -> Result<(), String> {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_sampler(0, None);
             gl.uniform_1_i32(gl.get_uniform_location(program, "source").as_ref(), 0);
-            for part in parts {
-                let (texture, screen, upright, area, smooth) = match part {
-                    Part::Cursor { x, y } => {
-                        let (x, y) = (fit.x(x), fit.y(y));
-                        gl.enable(glow::SCISSOR_TEST);
-                        for (size, shade) in [(7, 0.0), (5, 1.0)].map(|(size, shade)| ((size as f32 * fit.scale) as i32 | 1, shade)) {
-                            gl.scissor(x - size / 2, height - y - size / 2, size, size);
-                            gl.clear_color(shade, shade, shade, 1.0);
-                            gl.clear(glow::COLOR_BUFFER_BIT);
-                        }
-                        gl.disable(glow::SCISSOR_TEST);
-                        continue;
-                    }
-                    Part::Surface { texture, screen, area, smooth, top, picture } => {
-                        let area = fit.area(area);
-                        let step = match picture {
-                            Some(version) => panel.between.step((texture, version)),
-                            None => {
-                                if top {
-                                    panel.between.reset();
-                                }
-                                Step::Plain { keep: false }
-                            }
-                        };
-                        let keep = match step {
-                            Step::Plain { keep } => keep.then_some(0),
-                            Step::Halfway => Some(1),
-                        };
-                        if let Some(slot) = keep {
-                            panel.between.keep(&gl, program, texture, screen, slot)?;
-                            gl.bind_framebuffer(glow::FRAMEBUFFER, framebuffer);
-                        }
-                        if let Step::Halfway = step {
-                            let gl_area = [area[0], height - area[1] - area[3], area[2], area[3]];
-                            panel.between.draw(&gl, framebuffer, gl_area, smooth.then_some(linear))?;
-                            gl.use_program(Some(program));
-                            continue;
-                        }
-                        gl.use_program(Some(program));
-                        (texture, screen, 0, area, smooth)
-                    }
-                    Part::Overlay(overlay) => {
-                        draw_overlay(&gl, panel, &overlay, height, fit.inset((layout.0 - 640) / 2, (layout.1 - 480) / 2))?;
-                        continue;
-                    }
-                    Part::Pixels { index, pixels, width, height, area, smooth } => {
-                        if index == 0 {
-                            panel.between.reset();
-                        }
-                        let texture = match panel.textures[index] {
-                            Some((texture, w, h)) if (w, h) == (width, height) => texture,
-                            made => {
-                                if let Some((old, ..)) = made {
-                                    gl.delete_texture(old);
-                                }
-                                let texture = gl.create_texture()?;
-                                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                                gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, width as i32, height as i32);
-                                panel.textures[index] = Some((texture, width, height));
-                                texture
-                            }
-                        };
-                        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                        gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, width as i32, height as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&pixels)));
-                        (texture, [width as i32, height as i32, 0, 0], 1, fit.area(area), smooth)
-                    }
-                };
-                let y = height - area[1] - area[3];
-                gl.viewport(area[0], y, area[2], area[3]);
-                gl.uniform_4_i32(gl.get_uniform_location(program, "area").as_ref(), area[0], y, area[2], area[3]);
-                gl.uniform_4_i32(gl.get_uniform_location(program, "screen").as_ref(), screen[0], screen[1], screen[2], screen[3]);
-                gl.uniform_1_i32(gl.get_uniform_location(program, "upright").as_ref(), upright);
-                gl.uniform_1_i32(gl.get_uniform_location(program, "smooth_scale").as_ref(), smooth as i32);
-                gl.bind_sampler(0, smooth.then_some(linear));
-                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            }
+            // the screen the second window shows, and the cursor when that is
+            // the bottom one, go there; the rest to the panel
+            let second = second_surface(panel);
+            let (parts, second_parts): (Vec<Part>, Vec<Part>) = match second {
+                Some(_) => {
+                    let top = SECOND_SHOWS_TOP.load(std::sync::atomic::Ordering::Relaxed);
+                    parts.into_iter().partition(|part| match part {
+                        Part::Surface { top: is_top, .. } => *is_top != top,
+                        Part::Pixels { index, .. } => (*index == 0) != top,
+                        Part::Cursor { .. } => top,
+                        Part::Overlay(_) => true,
+                    })
+                }
+                None => (parts, Vec::new()),
+            };
+            draw_parts(&gl, panel, program, linear, framebuffer, height, fit, layout, parts)?;
             if let Output::Offscreen(_) = panel.output {
                 if let Some(path) = std::env::var_os("ZAKURO_PANEL_SHOT") {
                     let mut data = vec![0u8; (width * height * 4) as usize];
@@ -1694,6 +1844,9 @@ fn show(gl: GlRef, parts: Vec<Part>) -> Result<(), String> {
             if panel.egl.egl.SwapBuffers(panel.egl.display, panel.egl.surface) == 0 {
                 return Err("could not swap the panel's buffers".into());
             }
+            if let Some((surface, size)) = second {
+                draw_second(&gl, panel, program, linear, empty, surface, size, second_parts)?;
+            }
         }
         match &mut panel.output {
             Output::Kms(kms) => kms.flip(),
@@ -1729,6 +1882,8 @@ struct Panel {
     between: Between,
     /// the landscape canvas a portrait panel's picture is drawn into first.
     canvas: Option<Canvas>,
+    /// the surface on the second window, the window and its size.
+    second: Option<(egl::types::EGLSurface, *mut c_void, (i32, i32))>,
 }
 
 thread_local! {
@@ -2985,7 +3140,7 @@ impl Worker {
                         let layout = layout_for(if turn.is_some() { (height, width) } else { (width, height) });
                         let _ = LAYOUT.set(layout);
                         log::info!("screens laid out in {}x{}", layout.0, layout.1);
-                        PANEL.with(|screen| *screen.borrow_mut() = Some(Panel { egl, output, program: None, textures: [None, None], empty: None, linear: None, overlay: None, overlay_textures: HashMap::new(), between: Between::default(), canvas: None }));
+                        PANEL.with(|screen| *screen.borrow_mut() = Some(Panel { egl, output, program: None, textures: [None, None], empty: None, linear: None, overlay: None, overlay_textures: HashMap::new(), between: Between::default(), canvas: None, second: None }));
                     }
                     let gl: &'static glow::Context = Box::leak(Box::new(gl));
                     GL_CONTEXT.set(Some(gl));

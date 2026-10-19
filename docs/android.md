@@ -32,14 +32,15 @@ counterpart:
    shell. Drawing goes to an offscreen EGL surface on the handheld's own
    Mali driver, so this tests bionic, fastmem, the recompiled code and the
    renderer before any app exists.
-2. **One-screen APK (this branch).** A NativeActivity through the
+2. **One-screen APK (done).** A NativeActivity through the
    `android-activity` crate (`frontend/src/android.rs`), an `Output::Window`
    next to `Output::Kms` and `Output::Fbdev` in
    `engine/gpu/src/raster/gles.rs`, gamepad and touch from Android events
    into the same pad evdev fills, AAudio in `frontend/src/sound.rs`. The
    existing one-panel layouts work as they are.
-3. **Two screens.** A second activity or `Presentation` on display 1 hands
-   its window to the GPU thread; the top screen fills the top panel
+3. **Two screens (this branch).** A `Presentation` on the second display
+   (`scripts/android/java/.../SecondScreen.java`) hands its window to the
+   GPU thread, which draws one screen there in a pass of its own; the top screen fills the top panel
    (400x240 at 1.6 times, 640x384) and the bottom screen the bottom panel at
    exactly twice its size, with touch going straight to the 3DS.
 4. **Polish.** The build makes APKs, the menu opens with L3+R2 (a short
@@ -71,8 +72,13 @@ another key will not install over the old one.
 
 How it behaves for now:
 
-- both screens on the top display, in the menu's layouts; touching the
-  bottom screen where it is shown touches the 3DS's
+- the top screen fills the top display and the bottom screen the bottom
+  display, at twice its size, with its touches going to the 3DS's; Swap
+  screens in the menu (or a tap of L2) trades them. A file named
+  `one-screen` in the files folder keeps both on the top display, in the
+  menu's layouts, where touching the bottom screen touches the 3DS's
+- the bottom display's window never takes the buttons from the game, so a
+  touch there does not cost the pad its focus
 - the menu opens with L3 and R2 together; FN is the RG button, which the
   system may keep for itself
 - A, B, X and Y are what Android calls them; if they come out swapped, the

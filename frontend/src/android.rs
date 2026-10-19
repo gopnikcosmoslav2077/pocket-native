@@ -7,13 +7,22 @@
 //! script pushes there; the frontend keeps data/ (saves, log) and config/
 //! beside them. The title's recompiled code comes in the APK as
 //! libtitle.so, loaded by name from the app's own libraries.
+//!
+//! On a handheld with a second display, the RG DS's bottom panel, one of
+//! the screens goes there by itself: SecondScreen.java shows a Presentation
+//! on it, whose surface and touches come back here through JNI. A file named
+//! one-screen in the files directory keeps both screens on the first display.
 
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::time::Duration;
 
 use android_activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use jni::objects::{JClass, JObject, JValue};
+use jni::sys::{jboolean, jfloat, jint, JNI_TRUE};
+use jni::{JNIEnv, JavaVM, NativeMethod};
 
 use crate::input::{self, Pad, A, B, DOWN, FN, L1, L2, L3, LEFT, R1, R2, R3, RIGHT, SELECT, START, UP, X, Y};
 
@@ -52,6 +61,13 @@ fn android_main(app: AndroidApp) {
     }
 
     let pad = input::share();
+    if !files.join("one-screen").exists() {
+        match show_second_screen(&app) {
+            Ok(true) => log::info!("asked for the second screen"),
+            Ok(false) => log::info!("no second display, both screens on this one"),
+            Err(error) => log::warn!("could not show the second screen, {error}"),
+        }
+    }
     let rom = files.join("game.3ds").to_string_lossy().into_owned();
     let game = std::thread::Builder::new().name("game".into()).spawn(move || crate::run(vec![rom])).expect("a thread for the game");
 
@@ -200,4 +216,79 @@ fn to_layout(x: f32, y: f32, (width, height): (i32, i32)) -> (f32, f32) {
     let left = (width as f32 - layout_width as f32 * scale) / 2.0;
     let top = (height as f32 - layout_height as f32 * scale) / 2.0;
     ((x - left) / scale, (y - top) / scale)
+}
+
+/// the second display's window, acquired from its surface, null for none.
+static SECOND: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// registers SecondScreen's native methods and has it show the second
+/// screen, false when there is no second display.
+fn show_second_screen(app: &AndroidApp) -> Result<bool, String> {
+    // SAFETY: the activity's VM and activity, which live as long as the app
+    let (vm, activity) = unsafe { (JavaVM::from_raw(app.vm_as_ptr().cast()).map_err(|e| e.to_string())?, JObject::from_raw(app.activity_as_ptr().cast())) };
+    let mut env = vm.attach_current_thread_permanently().map_err(|e| e.to_string())?;
+    let found = (|| -> jni::errors::Result<bool> {
+        // the app's own classes come from the activity's class loader, not the
+        // one a thread attached from native code has
+        let loader = env.call_method(&activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+        let name = env.new_string("io.github.pocketnative.SecondScreen")?;
+        let class: JClass = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&name)])?.l()?.into();
+        let methods = [
+            NativeMethod { name: "surfaceReady".into(), sig: "(Landroid/view/Surface;)V".into(), fn_ptr: surface_ready as *mut c_void },
+            NativeMethod { name: "surfaceGone".into(), sig: "()V".into(), fn_ptr: surface_gone as *mut c_void },
+            NativeMethod { name: "touched".into(), sig: "(ZFFII)V".into(), fn_ptr: touched as *mut c_void },
+        ];
+        env.register_native_methods(&class, &methods)?;
+        env.call_static_method(&class, "show", "(Landroid/app/Activity;)Z", &[JValue::Object(&activity)])?.z()
+    })();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+    found.map_err(|e| e.to_string())
+}
+
+/// SecondScreen's surface, new or changed: its window goes to the renderer.
+extern "system" fn surface_ready(env: JNIEnv, _class: JClass, surface: JObject) {
+    // SAFETY: the surface the SurfaceView's holder gives, valid in this call;
+    // the window comes acquired, and is released once the renderer let it go
+    let window = unsafe { android_activity::ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast()) };
+    if window.is_null() {
+        return;
+    }
+    let old = SECOND.swap(window.cast(), Ordering::AcqRel);
+    if old == window.cast() {
+        // the same window again, a size or format change the renderer finds itself
+        // SAFETY: the reference fromSurface added
+        unsafe { android_activity::ndk_sys::ANativeWindow_release(window) };
+        return;
+    }
+    if !old.is_null() {
+        zakuro_gpu::set_second_window(std::ptr::null_mut());
+        // SAFETY: the window acquired for it before, which the renderer let go
+        unsafe { android_activity::ndk_sys::ANativeWindow_release(old.cast()) };
+    }
+    zakuro_gpu::set_second_window(window.cast());
+}
+
+/// SecondScreen's surface going away: the renderer lets go of it first.
+extern "system" fn surface_gone(_env: JNIEnv, _class: JClass) {
+    let old = SECOND.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    zakuro_gpu::set_second_window(std::ptr::null_mut());
+    if !old.is_null() {
+        // SAFETY: as in surface_ready
+        unsafe { android_activity::ndk_sys::ANativeWindow_release(old.cast()) };
+    }
+    input::share().lock().unwrap().second_touch = None;
+}
+
+/// a finger on SecondScreen's view, at x and y of its width and height,
+/// across and down the screen it shows, fitted into the view as the renderer
+/// fits it.
+extern "system" fn touched(_env: JNIEnv, _class: JClass, pressed: jboolean, x: jfloat, y: jfloat, width: jint, height: jint) {
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    let scale = (width / 320.0).min(height / 240.0);
+    let (left, top) = ((width - 320.0 * scale) / 2.0, (height - 240.0 * scale) / 2.0);
+    let at = ((x - left) / (320.0 * scale), (y - top) / (240.0 * scale));
+    input::share().lock().unwrap().second_touch = (pressed == JNI_TRUE).then_some(at);
 }
