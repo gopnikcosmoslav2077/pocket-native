@@ -446,6 +446,11 @@ fn main() {
         }
     }
     read_ahead.save();
+    // a run that ends inside the profiled frames still stops the timer,
+    // which left going holds up the exit, and writes what it sampled
+    if profiler::running() {
+        profiler::dump(&std::env::temp_dir().join("zakuro-host-profile.txt"));
+    }
     if let Some(probe) = probe {
         std::process::exit(probe.report(&mut system, &path, title_id, !profile.name.is_empty(), frame_number, stopped));
     }

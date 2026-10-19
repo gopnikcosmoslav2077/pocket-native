@@ -85,3 +85,11 @@ What to look for in the report:
 - the screenshots show whether the renderer draws right on the Mali-G52.
 - the speeds are as fast as it goes with nothing waiting for the panel, so
   above 100% means there is room left.
+
+## First results
+
+Pokémon Alpha Sapphire on an RG DS under GammaOS Next 1.4 (Android 14,
+Mali-G52 r25p0): the recompiled code loads and the game boots and draws with
+no errors. The first runs of a scene go at 18 to 84% while the Mali driver
+compiles its shaders; once the shader manifest has them, the title screen and
+intro run at 200 to 300% of the console's speed.

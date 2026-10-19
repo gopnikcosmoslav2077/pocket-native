@@ -1,7 +1,7 @@
 //! a sampling profiler: a CPU time timer interrupts whichever thread runs,
 //! which notes its thread and program counter.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 const SAMPLES: usize = 1 << 18;
 static PCS: [AtomicU64; SAMPLES] = [const { AtomicU64::new(0) }; SAMPLES];
@@ -10,6 +10,9 @@ static TIDS: [AtomicU32; SAMPLES] = [const { AtomicU32::new(0) }; SAMPLES];
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// the kernel's profiling timer, which the libc crate leaves out on Android.
 const ITIMER_PROF: libc::c_int = 2;
+/// whether the timer is going, so that a run ending before its last
+/// profiled frame still stops it and writes what it has.
+static RUNNING: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn sampled(_: i32, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     // SAFETY: the kernel hands the handler the interrupted context
@@ -42,11 +45,17 @@ pub fn start() {
         let timer = libc::itimerval { it_interval: interval, it_value: interval };
         libc::setitimer(ITIMER_PROF, &timer, std::ptr::null_mut());
     }
+    RUNNING.store(true, Ordering::Relaxed);
     log::info!("profiling the host");
+}
+
+pub fn running() -> bool {
+    RUNNING.load(Ordering::Relaxed)
 }
 
 /// stops and writes thread, mapping and offset for each sample.
 pub fn dump(path: &std::path::Path) {
+    RUNNING.store(false, Ordering::Relaxed);
     // SAFETY: a zero timer stops it
     unsafe {
         let zero: libc::itimerval = std::mem::zeroed();
