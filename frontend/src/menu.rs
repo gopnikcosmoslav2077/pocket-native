@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::font::{rgba, Canvas};
 use crate::input::{A, B, DOWN, LEFT, RIGHT, UP};
 use crate::profile::Profile;
-use crate::settings::{Advanced, Buttons, GameSettings, Layout, Power, Settings, Speed, Stick};
+use crate::settings::{Advanced, Buttons, GameSettings, Layout, Power, Settings, Speed, Stick, Stretch};
 
 const PANEL: [u8; 3] = [13, 20, 32];
 const EDGE: [u8; 3] = [40, 110, 210];
@@ -171,7 +171,16 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
             ("Layout", value)
         }
         Field::Smooth => ("Smooth scaling", if settings.smooth { "On" } else { "Off" }.into()),
-        Field::Stretch => ("Fill the panel", if settings.stretch { "Stretched" } else { "In shape" }.into()),
+        Field::Stretch => (
+            "Fill the display",
+            match settings.stretched {
+                Stretch::Off => "Off",
+                Stretch::Top => "Top screen",
+                Stretch::Bottom => "Bottom screen",
+                Stretch::Both => "Both",
+            }
+            .into(),
+        ),
         Field::Interpolate => ("Frame interpolation", if settings.interpolate_to == 0 { "Off".into() } else { format!("Up to {} fps", settings.interpolate_to) }),
         Field::ShowFps => ("Show fps", if settings.show_fps { "On" } else { "Off" }.into()),
         Field::ShowClock => ("Clock and battery", if settings.show_clock { "On" } else { "Off" }.into()),
@@ -217,7 +226,10 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
             (settings.layout, settings.swapped) = (layout, swapped);
         }
         Field::Smooth => settings.smooth = !settings.smooth,
-        Field::Stretch => settings.stretch = !settings.stretch,
+        Field::Stretch => {
+            let at = Stretch::ALL.iter().position(|&stretch| stretch == settings.stretched).unwrap_or(0) as isize;
+            settings.stretched = Stretch::ALL[(at + by).rem_euclid(Stretch::ALL.len() as isize) as usize];
+        }
         Field::Interpolate => settings.interpolate_to = step(&[0, 30, 60], settings.interpolate_to, by),
         Field::ShowFps => settings.show_fps = !settings.show_fps,
         Field::ShowClock => settings.show_clock = !settings.show_clock,
@@ -255,7 +267,7 @@ fn help(field: Field, profile: &Profile) -> &str {
     match field {
         Field::Layout => "Where the screens go. A tap of L2 swaps them, FN and R1 switch to one big screen.",
         Field::Smooth => "Smooths the picture as it is scaled up. Off is sharper, with uneven pixels.",
-        Field::Stretch => "With a screen on each display, stretches the top one over the panel: no bars, but a little too tall.",
+        Field::Stretch => "With a screen on each display, the screens stretched over theirs: no bars, but out of shape.",
         Field::Interpolate => "Fills in pictures halfway between a game's, up to 30 or 60 a second. 30 costs half as much GPU time.",
         Field::ShowFps => "Pictures a second and the temperature, in the bottom right corner.",
         Field::ShowClock => "The battery and a 12-hour clock, in the bottom left corner.",

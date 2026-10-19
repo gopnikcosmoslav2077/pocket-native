@@ -1000,6 +1000,14 @@ static SECOND_WINDOW: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::
 static SECOND_IN_USE: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 /// whether the second window shows the top screen rather than the bottom.
 static SECOND_SHOWS_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// whether the second window's screen is stretched over all of it.
+static SECOND_STRETCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// whether the second window's screen fills all of it, out of shape, rather
+/// than keeping its shape with bars.
+pub fn set_second_stretched(stretched: bool) {
+    SECOND_STRETCHED.store(stretched, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// hands the renderer a second window, on a second display, for one of the
 /// screens by itself, or takes it back with null. Taking it back waits, a
@@ -1580,13 +1588,27 @@ unsafe fn draw_second(
         return Err(format!("could not make the second window current, 0x{:X}", egl.egl.GetError()));
     }
     // the screen's own size is the layout here, its area all of it
-    let layout = parts
+    let mut layout = parts
         .iter()
         .find_map(|part| match part {
             Part::Surface { area, .. } | Part::Pixels { area, .. } => Some((area[2].max(1), area[3].max(1))),
             _ => None,
         })
         .unwrap_or((320, 240));
+    let mut parts = parts;
+    if SECOND_STRETCHED.load(std::sync::atomic::Ordering::Relaxed) {
+        // stretched, the window's own size is the layout, the screen all of
+        // it and the cursor moved along
+        let (across, down) = (width as f32 / layout.0 as f32, height as f32 / layout.1 as f32);
+        for part in &mut parts {
+            match part {
+                Part::Surface { area, .. } | Part::Pixels { area, .. } => *area = [0, 0, width, height],
+                Part::Cursor { x, y } => (*x, *y) = ((*x as f32 * across) as i32, (*y as f32 * down) as i32),
+                Part::Overlay(_) => {}
+            }
+        }
+        layout = (width, height);
+    }
     let fit = Fit::new(layout, (width, height));
     gl.bind_framebuffer(glow::FRAMEBUFFER, None);
     gl.viewport(0, 0, width, height);

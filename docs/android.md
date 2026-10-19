@@ -74,8 +74,9 @@ How it behaves for now:
 
 - the top screen fills the top display and the bottom screen the bottom
   display, at twice its size, with its touches going to the 3DS's; the
-  top screen keeps its shape, with bars above and below, unless Display,
-  Fill the panel stretches it; Swap
+  screens keep their shape, with bars where they do not fill a display,
+  unless Display, Fill the display stretches the top one, the bottom one or
+  both, on whichever display each is; Swap
   screens in the menu (or a tap of L2) trades them. A file named
   `one-screen` in the files folder keeps both on the top display, in the
   menu's layouts, where touching the bottom screen touches the 3DS's
