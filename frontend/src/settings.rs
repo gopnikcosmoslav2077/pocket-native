@@ -48,6 +48,9 @@ pub struct Settings {
     /// the bottom screen in the top one's place.
     pub swapped: bool,
     pub smooth: bool,
+    /// with a screen on each display, the one on the panel stretched to
+    /// fill it rather than kept in shape with bars.
+    pub stretch: bool,
     /// pictures a second the panel is filled up to with ones halfway
     /// between each two of the top screen's, 30 or 60, 0 for none.
     pub interpolate_to: u32,
@@ -71,6 +74,7 @@ impl Default for Settings {
             layout: Layout::BigTop,
             swapped: false,
             smooth: true,
+            stretch: false,
             interpolate_to: 0,
             show_fps: false,
             show_clock: true,

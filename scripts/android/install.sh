@@ -36,7 +36,8 @@ if [ $log_only = 1 ]; then
 fi
 
 echo "== installing $package"
-"${adb[@]}" install -r "$game/pocket-native.apk" >/dev/null
+# copied whole before installing, the streamed install can stall
+"${adb[@]}" install --no-streaming -r "$game/pocket-native.apk" >/dev/null
 echo "== pushing the game, unchanged files are skipped"
 "${adb[@]}" shell mkdir -p "$files/sysdata" "$files/titles"
 "${adb[@]}" push --sync "$game/game.3ds" "$files/game.3ds" >/dev/null

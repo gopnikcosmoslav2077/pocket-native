@@ -25,6 +25,7 @@ const ROW: f32 = 19.0;
 enum Field {
     Layout,
     Smooth,
+    Stretch,
     Interpolate,
     ShowFps,
     ShowClock,
@@ -137,7 +138,7 @@ fn sections(page: Page, profile: &Profile) -> Vec<(&'static str, Vec<Field>)> {
     let toggles = |range: std::ops::RangeInclusive<usize>| range.map(Field::Toggle).collect();
     match page {
         Page::Main => vec![
-            ("Display", vec![Field::Layout, Field::Smooth, Field::Interpolate, Field::ShowFps, Field::ShowClock]),
+            ("Display", vec![Field::Layout, Field::Smooth, Field::Stretch, Field::Interpolate, Field::ShowFps, Field::ShowClock]),
             ("Performance", vec![Field::FrameCap, Field::Power]),
             ("This game", (0..profile.options.len()).map(Field::Option).collect()),
             ("Controls", vec![Field::TouchSpeed, Field::Buttons, Field::LeftStick, Field::ReverseTiltX, Field::ReverseTiltY]),
@@ -170,6 +171,7 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
             ("Layout", value)
         }
         Field::Smooth => ("Smooth scaling", if settings.smooth { "On" } else { "Off" }.into()),
+        Field::Stretch => ("Fill the panel", if settings.stretch { "Stretched" } else { "In shape" }.into()),
         Field::Interpolate => ("Frame interpolation", if settings.interpolate_to == 0 { "Off".into() } else { format!("Up to {} fps", settings.interpolate_to) }),
         Field::ShowFps => ("Show fps", if settings.show_fps { "On" } else { "Off" }.into()),
         Field::ShowClock => ("Clock and battery", if settings.show_clock { "On" } else { "Off" }.into()),
@@ -215,6 +217,7 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
             (settings.layout, settings.swapped) = (layout, swapped);
         }
         Field::Smooth => settings.smooth = !settings.smooth,
+        Field::Stretch => settings.stretch = !settings.stretch,
         Field::Interpolate => settings.interpolate_to = step(&[0, 30, 60], settings.interpolate_to, by),
         Field::ShowFps => settings.show_fps = !settings.show_fps,
         Field::ShowClock => settings.show_clock = !settings.show_clock,
@@ -252,6 +255,7 @@ fn help(field: Field, profile: &Profile) -> &str {
     match field {
         Field::Layout => "Where the screens go. A tap of L2 swaps them, FN and R1 switch to one big screen.",
         Field::Smooth => "Smooths the picture as it is scaled up. Off is sharper, with uneven pixels.",
+        Field::Stretch => "With a screen on each display, stretches the top one over the panel: no bars, but a little too tall.",
         Field::Interpolate => "Fills in pictures halfway between a game's, up to 30 or 60 a second. 30 costs half as much GPU time.",
         Field::ShowFps => "Pictures a second and the temperature, in the bottom right corner.",
         Field::ShowClock => "The battery and a 12-hour clock, in the bottom left corner.",

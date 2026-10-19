@@ -19,7 +19,7 @@ pub fn shown(settings: &crate::settings::Settings) -> [Option<[i32; 4]>; 2] {
     let (here, there) = if settings.swapped { (BOTTOM, TOP) } else { (TOP, BOTTOM) };
     let scale = (width / here[0]).min(height / here[1]);
     let (a, b) = ((here[0] * scale).round() as i32, (here[1] * scale).round() as i32);
-    let filled = Some([(size.0 as i32 - a) / 2, (size.1 as i32 - b) / 2, a, b]);
+    let filled = if settings.stretch { Some([0, 0, size.0 as i32, size.1 as i32]) } else { Some([(size.0 as i32 - a) / 2, (size.1 as i32 - b) / 2, a, b]) };
     let alone = Some([0, 0, there[0] as i32, there[1] as i32]);
     if settings.swapped { [alone, filled] } else { [filled, alone] }
 }
