@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- the app for one game: a NativeActivity, which loads
      libpocket_native.so and calls its android_main, and one Java class of
-     its own for the second screen. make_apk.sh fills in the package and the
-     label for the game. -->
+     its own for the second screen. make_apk.sh fills in the package, the
+     label and the icon for the game. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="@PACKAGE@"
     android:versionCode="@VERSION_CODE@"
@@ -15,6 +15,7 @@
 
     <application
         android:label="@LABEL@"
+        @ICON@
         android:hasCode="true"
         android:extractNativeLibs="true"
         android:isGame="true"

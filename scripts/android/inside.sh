@@ -23,7 +23,18 @@ case "${rom,,}" in
 esac
 id=$(python3 tools/title_id.py "$game")
 name=$(sed -n '/^name = "/{s/^name = "\(.*\)"$/\1/p;q}' "titles/$id/profile.toml" 2>/dev/null || true)
-echo "== $id ${name:-(no profile yet)}"
+# the game's own title and icon, from its SMDH, for the app; the title
+# where there is no profile to name the game
+mkdir -p "/work/icons"
+own=$(python3 tools/game_info.py "$game" "/work/icons/$id.png" 4 || true)
+if [ -n "$name" ]; then
+    echo "== $id $name"
+elif [ -n "$own" ]; then
+    echo "== $id $own (no profile yet, named as the game names itself)"
+    name="$own"
+else
+    echo "== $id (no profile yet)"
+fi
 
 echo "== building the recompiler, and Pocket Native for Android"
 cargo build --release --locked -p recomp3ds --bin 3dsrecomp
@@ -61,7 +72,9 @@ echo "== packaging the app"
 "$strip" -o /work/libpocket_native.so "$CARGO_TARGET_DIR/aarch64-linux-android/release/libpocket_native.so"
 # the same key for every build, kept with the work, so that a new build
 # installs over the last one
+icon=""
+[ -s "/work/icons/$id.png" ] && icon="/work/icons/$id.png"
 package=$(bash scripts/android/make_apk.sh "$id" "${name:-$id}" /work/libpocket_native.so "$pn/games/$id/title.so" \
-    "$pn/games/$id/pocket-native.apk" /work/pocket-native.keystore | tail -1)
+    "$pn/games/$id/pocket-native.apk" /work/pocket-native.keystore "$icon" | tail -1)
 echo "$package" > "$pn/games/$id/package.txt"
 echo "== done: scripts/android/install.sh $id puts ${name:-$id} on the handheld over adb"

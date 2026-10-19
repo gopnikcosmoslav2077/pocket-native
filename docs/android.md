@@ -54,6 +54,9 @@ The build makes an app for each game, packaged with the SDK's build tools
 `android_main` the NativeActivity calls, and the game's code as
 `libtitle.so` beside it. Each game's app has its own package,
 `io.github.pocketnative.t<title id>`, so several can be installed at once.
+The app takes its name from the game's profile, or where there is none, the
+title the game gives itself, and its launcher icon from the game's own
+48x48 icon (`tools/game_info.py` reads both from the ROM's SMDH).
 
 ```bash
 scripts/android/build.sh path/to/game.cia
