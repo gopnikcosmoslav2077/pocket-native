@@ -27,16 +27,17 @@ counterpart:
 
 ## Phases
 
-1. **Headless bring-up (this branch).** Build `pocket-native` and a game's
+1. **Headless bring-up (done).** Build `pocket-native` and a game's
    `title.so` for Android, push them with adb and run `--probe` from the
    shell. Drawing goes to an offscreen EGL surface on the handheld's own
    Mali driver, so this tests bionic, fastmem, the recompiled code and the
    renderer before any app exists.
-2. **One-screen APK.** A NativeActivity (or the `android-activity` crate)
-   with an `ANativeWindow` output next to `Output::Kms` and `Output::Fbdev`
-   in `engine/gpu/src/raster/gles.rs`, input from Android events in place of
-   `frontend/src/input.rs`'s evdev reader, AAudio in `frontend/src/sound.rs`.
-   The existing one-panel layouts work as they are.
+2. **One-screen APK (this branch).** A NativeActivity through the
+   `android-activity` crate (`frontend/src/android.rs`), an `Output::Window`
+   next to `Output::Kms` and `Output::Fbdev` in
+   `engine/gpu/src/raster/gles.rs`, gamepad and touch from Android events
+   into the same pad evdev fills, AAudio in `frontend/src/sound.rs`. The
+   existing one-panel layouts work as they are.
 3. **Two screens.** A second activity or `Presentation` on display 1 hands
    its window to the GPU thread; the top screen fills the top panel
    (400x240 at 1.6 times, 640x384) and the bottom screen the bottom panel at
@@ -44,6 +45,40 @@ counterpart:
 4. **Polish.** The build makes APKs, the menu opens with L3+R2 (a short
    press of the RG button belongs to the system), power through GammaOS's
    profiles.
+
+## Phase 2: the app
+
+The build makes an app for each game, packaged with the SDK's build tools
+(no Gradle): `libpocket_native.so`, the frontend as a shared library whose
+`android_main` the NativeActivity calls, and the game's code as
+`libtitle.so` beside it. Each game's app has its own package,
+`io.github.pocketnative.t<title id>`, so several can be installed at once.
+
+```bash
+scripts/android/build.sh path/to/game.cia
+scripts/android/install.sh <title id>          # installs, pushes the game, starts it
+scripts/android/install.sh <title id> --log    # pulls its log
+```
+
+The game, the system font and the profiles live in the app's files folder,
+`/sdcard/Android/data/<package>/files`, with `data/` (saves, the log, the
+shaders it has built) and `config/` next to them. Uninstalling the app
+deletes that folder, saves included.
+
+The apps are signed with a key the first build makes, kept in
+`build/.work-android/pocket-native.keystore`. Keep it: an app signed with
+another key will not install over the old one.
+
+How it behaves for now:
+
+- both screens on the top display, in the menu's layouts; touching the
+  bottom screen where it is shown touches the 3DS's
+- the menu opens with L3 and R2 together; FN is the RG button, which the
+  system may keep for itself
+- A, B, X and Y are what Android calls them; if they come out swapped, the
+  menu's Controls has Nintendo and Xbox layouts
+- leaving the app (home, back, the RG button's frontend) saves the settings
+  and ends the game, as quitting from the menu does; save in the game first
 
 ## Phase 1: running a probe
 

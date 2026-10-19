@@ -1,58 +1,169 @@
-//! the title's sound through ALSA, stretched in time to keep the device's
-//! buffer about a tenth of a second full whatever the frame rate.
+//! the title's sound through ALSA, or AAudio on Android, stretched in time
+//! to keep the device's buffer about a tenth of a second full whatever the
+//! frame rate.
 
 use std::sync::mpsc;
 
 use zakuro_core::AUDIO_SAMPLE_RATE;
 
+/// where the sound goes: how many frames it holds that have not played yet,
+/// and taking more, all of them before it returns.
+trait Device {
+    fn queued(&mut self) -> i64;
+    fn write(&mut self, frames: &[[i16; 2]]);
+}
+
 pub fn play(samples: mpsc::Receiver<Vec<[i16; 2]>>) {
     std::thread::spawn(move || {
+        let Some(mut device) = open() else {
+            for _ in samples {}
+            return;
+        };
+        let target = AUDIO_SAMPLE_RATE * 0.1;
+        let mut stretch = Stretch::default();
+        let mut ratio = 1.0f64;
+        let mut chunk = Vec::new();
+        for samples in samples {
+            let queued = device.queued();
+            let wanted = (1.0 + (target - queued as f64) / target).clamp(0.75, 2.5);
+            ratio += (wanted - ratio) * 0.1;
+            chunk.clear();
+            stretch.push(&samples, ratio, &mut chunk);
+            device.write(&chunk);
+        }
+    });
+}
+
+#[cfg(not(target_os = "android"))]
+fn open() -> Option<Box<dyn Device>> {
+    Alsa::open().map(|alsa| Box::new(alsa) as Box<dyn Device>)
+}
+
+#[cfg(target_os = "android")]
+fn open() -> Option<Box<dyn Device>> {
+    AAudio::open().map(|aaudio| Box::new(aaudio) as Box<dyn Device>)
+}
+
+/// the sound through ALSA's default device, from libasound when the system
+/// has it.
+#[cfg(not(target_os = "android"))]
+struct Alsa {
+    _library: libloading::Library,
+    pcm: *mut u8,
+    write: unsafe extern "C" fn(*mut u8, *const u8, u64) -> i64,
+    recover: unsafe extern "C" fn(*mut u8, i32, i32) -> i32,
+    delay: unsafe extern "C" fn(*mut u8, *mut i64) -> i32,
+}
+
+#[cfg(not(target_os = "android"))]
+impl Alsa {
+    fn open() -> Option<Alsa> {
         // SAFETY: plain ALSA calls on the device this opens, with buffers
-        // that live as long as each call
+        // that live as long as each call, and functions kept no longer than
+        // the library they came from
         unsafe {
             let Ok(alsa) = libloading::Library::new("libasound.so.2") else {
                 log::warn!("no libasound, playing without sound");
-                for _ in samples {}
-                return;
+                return None;
             };
-            let open: libloading::Symbol<unsafe extern "C" fn(*mut *mut u8, *const u8, i32, i32) -> i32> = alsa.get(b"snd_pcm_open\0").unwrap();
-            let set: libloading::Symbol<unsafe extern "C" fn(*mut u8, i32, i32, u32, u32, i32, u32) -> i32> = alsa.get(b"snd_pcm_set_params\0").unwrap();
-            let write: libloading::Symbol<unsafe extern "C" fn(*mut u8, *const u8, u64) -> i64> = alsa.get(b"snd_pcm_writei\0").unwrap();
-            let recover: libloading::Symbol<unsafe extern "C" fn(*mut u8, i32, i32) -> i32> = alsa.get(b"snd_pcm_recover\0").unwrap();
-            let delay: libloading::Symbol<unsafe extern "C" fn(*mut u8, *mut i64) -> i32> = alsa.get(b"snd_pcm_delay\0").unwrap();
+            let open: libloading::Symbol<unsafe extern "C" fn(*mut *mut u8, *const u8, i32, i32) -> i32> = alsa.get(b"snd_pcm_open\0").ok()?;
+            let set: libloading::Symbol<unsafe extern "C" fn(*mut u8, i32, i32, u32, u32, i32, u32) -> i32> = alsa.get(b"snd_pcm_set_params\0").ok()?;
+            let write = *alsa.get::<unsafe extern "C" fn(*mut u8, *const u8, u64) -> i64>(b"snd_pcm_writei\0").ok()?;
+            let recover = *alsa.get::<unsafe extern "C" fn(*mut u8, i32, i32) -> i32>(b"snd_pcm_recover\0").ok()?;
+            let delay = *alsa.get::<unsafe extern "C" fn(*mut u8, *mut i64) -> i32>(b"snd_pcm_delay\0").ok()?;
             let mut pcm = std::ptr::null_mut();
             if open(&mut pcm, b"default\0".as_ptr(), 0, 0) < 0 || set(pcm, 2, 3, 2, AUDIO_SAMPLE_RATE.round() as u32, 1, 150_000) < 0 {
                 log::warn!("could not open the sound device, playing without sound");
-                for _ in samples {}
-                return;
+                return None;
             }
-            let target = AUDIO_SAMPLE_RATE * 0.1;
-            let mut stretch = Stretch::default();
-            let mut ratio = 1.0f64;
-            let mut chunk = Vec::new();
-            for samples in samples {
-                let mut queued = 0i64;
-                if delay(pcm, &mut queued) < 0 {
-                    queued = 0;
+            Some(Alsa { _library: alsa, pcm, write, recover, delay })
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+impl Device for Alsa {
+    fn queued(&mut self) -> i64 {
+        let mut queued = 0i64;
+        // SAFETY: the device open made, and a number for ALSA to fill
+        if unsafe { (self.delay)(self.pcm, &mut queued) } < 0 {
+            queued = 0;
+        }
+        queued
+    }
+
+    fn write(&mut self, frames: &[[i16; 2]]) {
+        let mut done = 0;
+        while done < frames.len() {
+            // SAFETY: the frames left, interleaved stereo as the device was set up
+            let written = unsafe { (self.write)(self.pcm, frames[done..].as_ptr().cast(), (frames.len() - done) as u64) };
+            if written < 0 {
+                // SAFETY: as above
+                if unsafe { (self.recover)(self.pcm, written as i32, 1) } < 0 {
+                    break;
                 }
-                let wanted = (1.0 + (target - queued as f64) / target).clamp(0.75, 2.5);
-                ratio += (wanted - ratio) * 0.1;
-                chunk.clear();
-                stretch.push(&samples, ratio, &mut chunk);
-                let mut done = 0;
-                while done < chunk.len() {
-                    let written = write(pcm, chunk[done..].as_ptr().cast(), (chunk.len() - done) as u64);
-                    if written < 0 {
-                        if recover(pcm, written as i32, 1) < 0 {
-                            break;
-                        }
-                    } else {
-                        done += written as usize;
-                    }
-                }
+            } else {
+                done += written as usize;
             }
         }
-    });
+    }
+}
+
+/// the sound through AAudio, which resamples the 3DS's rate to the device's.
+#[cfg(target_os = "android")]
+struct AAudio {
+    stream: ndk::audio::AudioStream,
+}
+
+#[cfg(target_os = "android")]
+impl AAudio {
+    fn open() -> Option<AAudio> {
+        use ndk::audio::{AudioDirection, AudioFormat, AudioPerformanceMode, AudioSharingMode, AudioStreamBuilder};
+        let opened = AudioStreamBuilder::new().and_then(|builder| {
+            builder
+                .direction(AudioDirection::Output)
+                .format(AudioFormat::PCM_I16)
+                .channel_count(2)
+                .sample_rate(AUDIO_SAMPLE_RATE.round() as i32)
+                .sharing_mode(AudioSharingMode::Shared)
+                .performance_mode(AudioPerformanceMode::LowLatency)
+                .open_stream()
+        });
+        let stream = match opened {
+            Ok(stream) => stream,
+            Err(error) => {
+                log::warn!("could not open AAudio, playing without sound, {error:?}");
+                return None;
+            }
+        };
+        // room for a fifth of a second, twice what play keeps queued
+        let _ = stream.set_buffer_size_in_frames((AUDIO_SAMPLE_RATE * 0.2) as i32);
+        if let Err(error) = stream.request_start() {
+            log::warn!("could not start AAudio, playing without sound, {error:?}");
+            return None;
+        }
+        log::info!("sound through AAudio at {} Hz, {} frames a burst", stream.sample_rate(), stream.frames_per_burst());
+        Some(AAudio { stream })
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Device for AAudio {
+    fn queued(&mut self) -> i64 {
+        (self.stream.frames_written() - self.stream.frames_read()).max(0)
+    }
+
+    fn write(&mut self, frames: &[[i16; 2]]) {
+        let mut done = 0;
+        while done < frames.len() {
+            // SAFETY: the frames left, interleaved stereo 16-bit as the stream
+            // was opened, waiting at most a tenth of a second for room
+            match unsafe { self.stream.write(frames[done..].as_ptr().cast(), (frames.len() - done) as i32, 100_000_000) } {
+                Ok(0) | Err(_) => break,
+                Ok(written) => done += written as usize,
+            }
+        }
+    }
 }
 
 const SEGMENT: usize = 1024;

@@ -8,13 +8,29 @@ ARG NDK_VERSION=r27c
 # GammaOS Next on the RG DS is Android 14
 ARG ANDROID_API=30
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        gcc g++ libc6-dev make pkg-config ca-certificates curl unzip python3 python3-pip \
+        gcc g++ libc6-dev make pkg-config ca-certificates curl unzip zip python3 python3-pip openjdk-17-jdk-headless \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir pycryptodomex
 RUN curl -sSfL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -o /tmp/ndk.zip \
     && unzip -q /tmp/ndk.zip -d /opt \
     && mv "/opt/android-ndk-${NDK_VERSION}" /opt/ndk \
     && rm /tmp/ndk.zip
+# the SDK's build tools and the platform an APK is linked against, for
+# packaging the app without Gradle
+ARG CMDLINE_TOOLS=11076708
+ARG SDK_PLATFORM=34
+ARG BUILD_TOOLS=34.0.0
+RUN curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS}_latest.zip" -o /tmp/tools.zip \
+    && mkdir -p /opt/sdk/cmdline-tools \
+    && unzip -q /tmp/tools.zip -d /opt/sdk/cmdline-tools \
+    && mv /opt/sdk/cmdline-tools/cmdline-tools /opt/sdk/cmdline-tools/latest \
+    && rm /tmp/tools.zip \
+    && yes | /opt/sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/sdk --licenses >/dev/null \
+    && /opt/sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/sdk "build-tools;${BUILD_TOOLS}" "platforms;android-${SDK_PLATFORM}" >/dev/null \
+    && chmod -R a+rX /opt/sdk
+ENV ANDROID_HOME=/opt/sdk \
+    BUILD_TOOLS_BIN=/opt/sdk/build-tools/${BUILD_TOOLS} \
+    ANDROID_JAR=/opt/sdk/platforms/android-${SDK_PLATFORM}/android.jar
 ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | CARGO_HOME=/opt/cargo sh -s -- -y --profile minimal --component rustfmt,clippy --no-modify-path --target aarch64-linux-android \
     && chmod -R a+rX /opt/rustup /opt/cargo

@@ -1,8 +1,9 @@
 #!/bin/bash
 # inside.sh <rom> [aes_keys.txt]: the Android build, in the container. /src
 # is the repository, read only, /work the scratch space kept between builds,
-# and /out where "Pocket Native Android" is put together, ready for
-# scripts/android/probe.sh to push to the handheld with adb.
+# and /out where "Pocket Native Android" is put together: the game's app,
+# for scripts/android/install.sh to put on the handheld with adb, and the
+# program and libraries scripts/android/probe.sh runs from adb shell.
 set -euo pipefail
 
 FONT_URL=https://raw.githubusercontent.com/azahar-emu/azahar/c9e1e946a0b5d30a58ae14dee83c1f203a49622d/externals/open_source_archives/include/shared_font.app.romfs.h
@@ -55,4 +56,12 @@ python3 tools/third_party.py "$pn/THIRD_PARTY_LICENSES.txt" >/dev/null
 cp /work/shared_font.bin "$pn/games/$id/sysdata/shared_font.bin"
 cp "$game" "$pn/games/$id/game.3ds"
 chmod +x "$pn/pocket-native" "$pn/probe.sh"
-echo "== done: scripts/android/probe.sh $id runs it on the handheld over adb"
+
+echo "== packaging the app"
+"$strip" -o /work/libpocket_native.so "$CARGO_TARGET_DIR/aarch64-linux-android/release/libpocket_native.so"
+# the same key for every build, kept with the work, so that a new build
+# installs over the last one
+package=$(bash scripts/android/make_apk.sh "$id" "${name:-$id}" /work/libpocket_native.so "$pn/games/$id/title.so" \
+    "$pn/games/$id/pocket-native.apk" /work/pocket-native.keystore | tail -1)
+echo "$package" > "$pn/games/$id/package.txt"
+echo "== done: scripts/android/install.sh $id puts ${name:-$id} on the handheld over adb"

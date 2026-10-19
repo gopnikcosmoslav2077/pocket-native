@@ -988,6 +988,17 @@ extern "C" fn flipped(_fd: i32, sequence: u32, seconds: u32, microseconds: u32, 
     FLIPPED_TIME.store(seconds as u64 * 1_000_000 + microseconds as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// a native window made by the program around the engine, an Android
+/// activity's, that the screens go to in place of the panel, null for none.
+static WINDOW: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// hands the renderer a native window to show the screens in, an
+/// ANativeWindow on Android, before the title is loaded. The window has to
+/// stay valid as long as the renderer runs.
+pub fn set_window(window: *mut c_void) {
+    WINDOW.store(window, std::sync::atomic::Ordering::Release);
+}
+
 /// the panel's refresh period, and how long before its refresh the last
 /// picture was handed over, in nanoseconds, 0 when not known.
 static PANEL_PERIOD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1244,10 +1255,11 @@ fn panel_shape(output: &Output) -> ((i32, i32), Option<i32>) {
     let size = match output {
         Output::Kms(kms) => kms.size(),
         Output::Fbdev(window) => (window[0] as i32, window[1] as i32),
+        Output::Window(size) => *size,
         Output::Offscreen(_) => (640, 480),
     };
     let turn = match output {
-        Output::Kms(_) | Output::Fbdev(_) => panel_turn(size.0, size.1),
+        Output::Kms(_) | Output::Fbdev(_) | Output::Window(_) => panel_turn(size.0, size.1),
         Output::Offscreen(_) => None,
     };
     (size, turn)
@@ -1685,7 +1697,7 @@ fn show(gl: GlRef, parts: Vec<Part>) -> Result<(), String> {
         }
         match &mut panel.output {
             Output::Kms(kms) => kms.flip(),
-            Output::Fbdev(_) | Output::Offscreen(_) => Ok(()),
+            Output::Fbdev(_) | Output::Window(_) | Output::Offscreen(_) => Ok(()),
         }
     })
 }
@@ -1698,6 +1710,8 @@ enum Output {
     /// the framebuffer device's size, the window a Mali driver built for
     /// it takes, kept where EGL was given it.
     Fbdev(Box<[u16; 2]>),
+    /// a window set_window was given, its size.
+    Window((i32, i32)),
     Offscreen(glow::Framebuffer),
 }
 
@@ -1983,6 +1997,64 @@ impl Egl {
         }
     }
 
+    /// a context drawing into a native window set_window was given, and the
+    /// window's size.
+    fn new_window(window: *mut c_void) -> Result<(Egl, glow::Context, (i32, i32)), String> {
+        // SAFETY: as in new, and the window stays valid as set_window asks
+        unsafe {
+            let library = open(&["libEGL.so.1", "libEGL.so"]).map_err(|why| format!("could not load libEGL, {why}"))?;
+            let gles = open(&["libGLESv2.so.2", "libGLESv2.so"]).ok();
+            let loaded = egl::Egl::load_with(|name| symbol(&library, name));
+            let display = loaded.GetDisplay(egl::DEFAULT_DISPLAY);
+            let (mut major, mut minor) = (0, 0);
+            if display.is_null() || loaded.Initialize(display, &mut major, &mut minor) == 0 {
+                return Err(format!("could not initialize EGL for the window, 0x{:X}", loaded.GetError()));
+            }
+            loaded.BindAPI(egl::OPENGL_ES_API);
+            let attributes = [
+                egl::RENDERABLE_TYPE as i32,
+                egl::OPENGL_ES3_BIT as i32,
+                egl::SURFACE_TYPE as i32,
+                egl::WINDOW_BIT as i32,
+                egl::RED_SIZE as i32,
+                8,
+                egl::GREEN_SIZE as i32,
+                8,
+                egl::BLUE_SIZE as i32,
+                8,
+                egl::ALPHA_SIZE as i32,
+                0,
+                egl::DEPTH_SIZE as i32,
+                0,
+                egl::NONE as i32,
+            ];
+            let mut configs = [std::ptr::null(); 64];
+            let mut count = 0;
+            if loaded.ChooseConfig(display, attributes.as_ptr(), configs.as_mut_ptr(), 64, &mut count) == 0 || count <= 0 {
+                return Err("no EGL config for the window".into());
+            }
+            // the first config with exactly eight bits a channel and no alpha,
+            // which the window's buffers take without a conversion
+            let exact = configs[..count as usize].iter().copied().find(|&config| {
+                let size = |attribute: u32| {
+                    let mut value = 0;
+                    loaded.GetConfigAttrib(display, config, attribute as i32, &mut value);
+                    value
+                };
+                [size(egl::RED_SIZE), size(egl::GREEN_SIZE), size(egl::BLUE_SIZE), size(egl::ALPHA_SIZE)] == [8, 8, 8, 0]
+            });
+            let config = exact.unwrap_or(configs[0]);
+            let (egl, gl) = Egl::on_window((library, gles), loaded, display, config, window as glutin_egl_sys::EGLNativeWindowType, 1)?;
+            let (mut width, mut height) = (0, 0);
+            egl.egl.QuerySurface(egl.display, egl.surface, egl::WIDTH as i32, &mut width);
+            egl.egl.QuerySurface(egl.display, egl.surface, egl::HEIGHT as i32, &mut height);
+            if width <= 0 || height <= 0 {
+                return Err(format!("the window has no size, {width}x{height}"));
+            }
+            Ok((egl, gl, (width, height)))
+        }
+    }
+
     /// an OpenGL ES 3.1 context drawing to a window, swapping its buffers
     /// interval refreshes apart.
     unsafe fn on_window(
@@ -2053,6 +2125,12 @@ impl Egl {
     }
 
     fn new_with_panel() -> Result<(Egl, glow::Context, Option<Output>), String> {
+        let window = WINDOW.load(std::sync::atomic::Ordering::Acquire);
+        if !window.is_null() {
+            let (egl, gl, size) = Egl::new_window(window)?;
+            log::info!("the screens go to a {}x{} window", size.0, size.1);
+            return Ok((egl, gl, Some(Output::Window(size))));
+        }
         if std::env::var_os("ZAKURO_KMS").is_some() {
             return match Egl::new_kms() {
                 Ok((egl, gl, kms)) => Ok((egl, gl, Some(Output::Kms(kms)))),
