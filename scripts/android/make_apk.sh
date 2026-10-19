@@ -48,7 +48,9 @@ mapfile -t classes < <(find "$work/classes" -name '*.class')
 mkdir -p "$work/lib/arm64-v8a"
 cp "$engine" "$work/lib/arm64-v8a/libpocket_native.so"
 cp "$title" "$work/lib/arm64-v8a/libtitle.so"
-(cd "$work" && zip -q -r unaligned.apk lib)
+# stored, not compressed, and page-aligned by zipalign -p, so that Android
+# loads them from the APK itself rather than unpacking a second copy
+(cd "$work" && zip -q -r -0 unaligned.apk lib)
 "$BUILD_TOOLS_BIN/zipalign" -p -f 4 "$work/unaligned.apk" "$work/aligned.apk"
 
 if [ ! -f "$keystore" ]; then

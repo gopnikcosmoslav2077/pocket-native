@@ -64,10 +64,16 @@ scripts/android/install.sh <title id>          # installs, pushes the game, star
 scripts/android/install.sh <title id> --log    # pulls its log
 ```
 
-The game, the system font and the profiles live in the app's files folder,
-`/sdcard/Android/data/<package>/files`, with `data/` (saves, the log, the
-shaders it has built) and `config/` next to them. Uninstalling the app
-deletes that folder, saves included.
+The game goes on the SD card, in the app's own folder there,
+`/storage/<card>/Android/data/<package>/files/game.3ds`, which the app reads
+with no storage permission; with no card in, or with `install.sh --internal`,
+it goes in the app's files folder on the built-in storage instead. That
+folder, `/sdcard/Android/data/<package>/files`, holds the system font and the
+profiles, with `data/` (saves, the log, the shaders it has built) and
+`config/` next to them, all small. Uninstalling the app deletes both
+folders, saves included. The app's libraries stay inside its APK, stored
+uncompressed so that Android loads them from there rather than unpacking a
+second copy.
 
 The apps are signed with a key the first build makes, kept in
 `build/.work-android/pocket-native.keystore`. Keep it: an app signed with

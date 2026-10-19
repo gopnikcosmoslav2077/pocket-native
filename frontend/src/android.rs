@@ -3,9 +3,11 @@
 //! sticks and touch, and whose files directory holds the game.
 //!
 //! The app's files directory, /sdcard/Android/data/<package>/files, holds
-//! game.3ds, sysdata/shared_font.bin and titles/, which the build's install
-//! script pushes there; the frontend keeps data/ (saves, log) and config/
-//! beside them. The title's recompiled code comes in the APK as
+//! sysdata/shared_font.bin and titles/, which the build's install script
+//! pushes there; the frontend keeps data/ (saves, log) and config/ beside
+//! them. game.3ds goes in the app's own folder on the SD card,
+//! /storage/<card>/Android/data/<package>/files, which the app reads with no
+//! permission, or beside the rest where there is no card. The title's recompiled code comes in the APK as
 //! libtitle.so, loaded by name from the app's own libraries.
 //!
 //! On a handheld with a second display, the RG DS's bottom panel, one of
@@ -68,7 +70,7 @@ fn android_main(app: AndroidApp) {
             Err(error) => log::warn!("could not show the second screen, {error}"),
         }
     }
-    let rom = files.join("game.3ds").to_string_lossy().into_owned();
+    let rom = find_game(&app, &files).to_string_lossy().into_owned();
     let game = std::thread::Builder::new().name("game".into()).spawn(move || crate::run(vec![rom])).expect("a thread for the game");
 
     loop {
@@ -220,6 +222,65 @@ fn to_layout(x: f32, y: f32, (width, height): (i32, i32)) -> (f32, f32) {
 
 /// the second display's window, acquired from its surface, null for none.
 static SECOND: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// the game: game.3ds in the app's own folder on a removable card, where
+/// install.sh puts it when there is one, or else beside the app's files.
+fn find_game(app: &AndroidApp, files: &Path) -> PathBuf {
+    let mut places = match external_dirs(app) {
+        Ok(dirs) => dirs,
+        Err(error) => {
+            log::warn!("could not ask for the app's folders on the cards, {error}");
+            Vec::new()
+        }
+    };
+    // the first is the built-in storage's, the rest are cards'
+    if !places.is_empty() {
+        let builtin = places.remove(0);
+        places.push(builtin);
+    }
+    places.push(files.to_path_buf());
+    let found = places.iter().map(|dir| dir.join("game.3ds")).find(|path| path.is_file());
+    match found {
+        Some(path) => {
+            log::info!("the game is {}", path.display());
+            path
+        }
+        None => {
+            log::error!("no game.3ds in any of {places:?}, scripts/android/install.sh puts it there");
+            files.join("game.3ds")
+        }
+    }
+}
+
+/// the app's own files folder on each storage volume, the built-in one
+/// first, which asking for them also makes on a card that lacks it.
+fn external_dirs(app: &AndroidApp) -> Result<Vec<PathBuf>, String> {
+    // SAFETY: the activity's VM and activity, which live as long as the app
+    let (vm, activity) = unsafe { (JavaVM::from_raw(app.vm_as_ptr().cast()).map_err(|e| e.to_string())?, JObject::from_raw(app.activity_as_ptr().cast())) };
+    let mut env = vm.attach_current_thread_permanently().map_err(|e| e.to_string())?;
+    let dirs = (|| -> jni::errors::Result<Vec<PathBuf>> {
+        let array: jni::objects::JObjectArray = env
+            .call_method(&activity, "getExternalFilesDirs", "(Ljava/lang/String;)[Ljava/io/File;", &[JValue::Object(&JObject::null())])?
+            .l()?
+            .into();
+        let mut dirs = Vec::new();
+        for index in 0..env.get_array_length(&array)? {
+            let dir = env.get_object_array_element(&array, index)?;
+            // null for a volume that is not mounted
+            if dir.is_null() {
+                continue;
+            }
+            let path: jni::objects::JString = env.call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])?.l()?.into();
+            dirs.push(PathBuf::from(String::from(env.get_string(&path)?)));
+        }
+        Ok(dirs)
+    })();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+    dirs.map_err(|e| e.to_string())
+}
 
 /// registers SecondScreen's native methods and has it show the second
 /// screen, false when there is no second display.

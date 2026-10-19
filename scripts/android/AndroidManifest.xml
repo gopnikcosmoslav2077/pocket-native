@@ -17,7 +17,7 @@
         android:label="@LABEL@"
         @ICON@
         android:hasCode="true"
-        android:extractNativeLibs="true"
+        android:extractNativeLibs="false"
         android:isGame="true"
         android:appCategory="game"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
