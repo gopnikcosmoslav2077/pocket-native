@@ -8,6 +8,8 @@ static PCS: [AtomicU64; SAMPLES] = [const { AtomicU64::new(0) }; SAMPLES];
 static LRS: [AtomicU64; SAMPLES] = [const { AtomicU64::new(0) }; SAMPLES];
 static TIDS: [AtomicU32; SAMPLES] = [const { AtomicU32::new(0) }; SAMPLES];
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+/// the kernel's profiling timer, which the libc crate leaves out on Android.
+const ITIMER_PROF: libc::c_int = 2;
 
 extern "C" fn sampled(_: i32, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     // SAFETY: the kernel hands the handler the interrupted context
@@ -38,7 +40,7 @@ pub fn start() {
         libc::sigaction(libc::SIGPROF, &action, std::ptr::null_mut());
         let interval = libc::timeval { tv_sec: 0, tv_usec: 1000 };
         let timer = libc::itimerval { it_interval: interval, it_value: interval };
-        libc::setitimer(libc::ITIMER_PROF, &timer, std::ptr::null_mut());
+        libc::setitimer(ITIMER_PROF, &timer, std::ptr::null_mut());
     }
     log::info!("profiling the host");
 }
@@ -48,7 +50,7 @@ pub fn dump(path: &std::path::Path) {
     // SAFETY: a zero timer stops it
     unsafe {
         let zero: libc::itimerval = std::mem::zeroed();
-        libc::setitimer(libc::ITIMER_PROF, &zero, std::ptr::null_mut());
+        libc::setitimer(ITIMER_PROF, &zero, std::ptr::null_mut());
     }
     let maps: Vec<(u64, u64, u64, String)> = std::fs::read_to_string("/proc/self/maps")
         .unwrap_or_default()

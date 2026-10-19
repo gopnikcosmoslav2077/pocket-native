@@ -25,7 +25,8 @@ JIT, and it does the heavy lifting here. This fork adds:
   your games again with it
 
 The Android app and the Vulkan renderer of upstream Zakuro are not part of
-this fork.
+this fork. A port to the Anbernic RG DS under GammaOS Next (Android) is
+under way, see [docs/android.md](docs/android.md).
 
 ## Games
 
