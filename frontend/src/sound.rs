@@ -9,8 +9,14 @@ use zakuro_core::AUDIO_SAMPLE_RATE;
 /// where the sound goes: how many frames it holds that have not played yet,
 /// and taking more, all of them before it returns.
 trait Device {
+    /// frames queued, at the title's rate.
     fn queued(&mut self) -> i64;
     fn write(&mut self, frames: &[[i16; 2]]);
+    /// how much to keep queued, in seconds, which is about how far the
+    /// sound lags the picture.
+    fn target(&self) -> f64 {
+        0.1
+    }
 }
 
 pub fn play(samples: mpsc::Receiver<Vec<[i16; 2]>>) {
@@ -19,7 +25,7 @@ pub fn play(samples: mpsc::Receiver<Vec<[i16; 2]>>) {
             for _ in samples {}
             return;
         };
-        let target = AUDIO_SAMPLE_RATE * 0.1;
+        let target = AUDIO_SAMPLE_RATE * device.target();
         let mut stretch = Stretch::default();
         let mut ratio = 1.0f64;
         let mut chunk = Vec::new();
@@ -109,10 +115,18 @@ impl Device for Alsa {
     }
 }
 
-/// the sound through AAudio, which resamples the 3DS's rate to the device's.
+/// the sound through AAudio at the device's own rate, which the title's is
+/// resampled to here: a stream at the title's rate would have the system
+/// resample it, and lose the low-latency path for it.
 #[cfg(target_os = "android")]
 struct AAudio {
     stream: ndk::audio::AudioStream,
+    /// the device's frames to one of the title's.
+    step: f64,
+    /// where the resampler is between the last frame and the next.
+    at: f64,
+    last: [f32; 2],
+    out: Vec<[i16; 2]>,
 }
 
 #[cfg(target_os = "android")]
@@ -124,7 +138,6 @@ impl AAudio {
                 .direction(AudioDirection::Output)
                 .format(AudioFormat::PCM_I16)
                 .channel_count(2)
-                .sample_rate(AUDIO_SAMPLE_RATE.round() as i32)
                 .sharing_mode(AudioSharingMode::Shared)
                 .performance_mode(AudioPerformanceMode::LowLatency)
                 .open_stream()
@@ -136,29 +149,49 @@ impl AAudio {
                 return None;
             }
         };
-        // room for a fifth of a second, twice what play keeps queued
-        let _ = stream.set_buffer_size_in_frames((AUDIO_SAMPLE_RATE * 0.2) as i32);
+        // two bursts, the least the device plays without gaps, play keeping
+        // its own queue on top
+        let burst = stream.frames_per_burst().max(64);
+        let _ = stream.set_buffer_size_in_frames(burst * 2);
         if let Err(error) = stream.request_start() {
             log::warn!("could not start AAudio, playing without sound, {error:?}");
             return None;
         }
-        log::info!("sound through AAudio at {} Hz, {} frames a burst", stream.sample_rate(), stream.frames_per_burst());
-        Some(AAudio { stream })
+        let rate = stream.sample_rate().max(1);
+        log::info!("sound through AAudio at {rate} Hz, {burst} frames a burst, {:?}", stream.performance_mode());
+        Some(AAudio { step: AUDIO_SAMPLE_RATE / rate as f64, stream, at: 0.0, last: [0.0; 2], out: Vec::new() })
     }
 }
 
 #[cfg(target_os = "android")]
 impl Device for AAudio {
     fn queued(&mut self) -> i64 {
-        (self.stream.frames_written() - self.stream.frames_read()).max(0)
+        let device = (self.stream.frames_written() - self.stream.frames_read()).max(0);
+        (device as f64 * self.step) as i64
+    }
+
+    fn target(&self) -> f64 {
+        0.05
     }
 
     fn write(&mut self, frames: &[[i16; 2]]) {
+        // linear between the title's frames, at the device's rate
+        self.out.clear();
+        for frame in frames {
+            let next = frame.map(f32::from);
+            while self.at < 1.0 {
+                let t = self.at as f32;
+                self.out.push([0, 1].map(|channel| (self.last[channel] + (next[channel] - self.last[channel]) * t) as i16));
+                self.at += self.step;
+            }
+            self.at -= 1.0;
+            self.last = next;
+        }
         let mut done = 0;
-        while done < frames.len() {
+        while done < self.out.len() {
             // SAFETY: the frames left, interleaved stereo 16-bit as the stream
             // was opened, waiting at most a tenth of a second for room
-            match unsafe { self.stream.write(frames[done..].as_ptr().cast(), (frames.len() - done) as i32, 100_000_000) } {
+            match unsafe { self.stream.write(self.out[done..].as_ptr().cast(), (self.out.len() - done) as i32, 100_000_000) } {
                 Ok(0) | Err(_) => break,
                 Ok(written) => done += written as usize,
             }
