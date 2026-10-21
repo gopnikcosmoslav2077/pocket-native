@@ -59,10 +59,15 @@ title the game gives itself, and its launcher icon from the game's own
 48x48 icon (`tools/game_info.py` reads both from the ROM's SMDH).
 
 ```bash
-scripts/android/build.sh path/to/game.cia
-scripts/android/install.sh <title id>          # installs, pushes the game, starts it
-scripts/android/install.sh <title id> --log    # pulls its log
+scripts/android/build.sh path/to/game.cia --install   # builds it and puts it on the handheld
+scripts/android/install.sh                            # installs again; lists the games when there are several
+scripts/android/install.sh "alpha sapphire"           # a game by any part of its name
+scripts/android/install.sh "alpha sapphire" --log     # pulls its log
 ```
+
+A game is named by any part of its name, in any case, accents or not
+("pokemon x" finds Pokémon X), or by its title id; with none named,
+`install.sh` takes the only game built, or lists them to pick one by number.
 
 The game goes on the SD card, in the app's own folder there,
 `/storage/<card>/Android/data/<package>/files/game.3ds`, which the app reads
@@ -115,8 +120,8 @@ On a Linux PC with podman or Docker, and adb (Android platform-tools):
 
 ```bash
 scripts/android/build.sh path/to/game.3ds
-scripts/android/probe.sh <title id>            # 3600 frames
-scripts/android/probe.sh <title id> 600        # a quicker look
+scripts/android/probe.sh                         # 3600 frames, the game picked as install.sh does
+scripts/android/probe.sh "alpha sapphire" 600     # a quicker look
 ```
 
 The first build makes the container, about 1 GB more than the ArkOS one

@@ -1,7 +1,9 @@
 #!/bin/bash
-# install.sh <title id> [--out dir] [--serial id] [--no-start] [--internal | --sd <card>]
+# install.sh [game] [--out dir] [--serial id] [--no-start] [--internal | --sd <card>] [--log]
 #
-# Puts a game scripts/android/build.sh made on the handheld with adb: installs
+# Puts a game scripts/android/build.sh made on the handheld with adb, the game
+# named by any part of its name ("pokemon x") or its title id, or with none
+# named the only one built, or one picked from a list: installs
 # its app, pushes the system font and the profiles to the app's files folder
 # and the game to the app's own folder on the SD card, or with no card (or
 # --internal) beside the rest (later pushes skip what has not changed), and
@@ -20,13 +22,14 @@ while [ $# -gt 0 ]; do
         --log) log_only=1; shift ;;
         --internal) internal=1; shift ;;
         --sd) card="$2"; shift 2 ;;
-        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) id="$1"; shift ;;
     esac
 done
-[ -n "$id" ] || { echo "usage: scripts/android/install.sh <title id>"; exit 2; }
-game="$out/Pocket Native Android/pocket-native/games/$id"
 pn="$out/Pocket Native Android/pocket-native"
+id=$(bash "$repo/scripts/android/pick_game.sh" "$pn/games" "$id")
+game="$pn/games/$id"
+name=$(cat "$game/name.txt" 2>/dev/null || echo "$id")
 [ -f "$game/pocket-native.apk" ] || { echo "no app for $id in $game, build it with scripts/android/build.sh first"; exit 2; }
 command -v adb >/dev/null || { echo "adb is not installed (Android platform-tools)"; exit 1; }
 package=$(cat "$game/package.txt")
@@ -39,7 +42,7 @@ if [ $log_only = 1 ]; then
     exit 0
 fi
 
-echo "== installing $package"
+echo "== installing $name ($package)"
 # copied whole before installing, the streamed install can stall
 "${adb[@]}" install --no-streaming -r "$game/pocket-native.apk" >/dev/null
 "${adb[@]}" shell mkdir -p "$files/sysdata" "$files/titles"
@@ -74,4 +77,4 @@ if [ $start = 1 ]; then
     echo "== starting it"
     "${adb[@]}" shell am start -n "$package/android.app.NativeActivity" >/dev/null
 fi
-echo "== done; scripts/android/install.sh $id --log pulls its log"
+echo "== done; scripts/android/install.sh \"$name\" --log pulls its log"

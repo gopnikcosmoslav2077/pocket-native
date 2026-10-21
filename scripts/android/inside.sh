@@ -77,4 +77,7 @@ icon=""
 package=$(bash scripts/android/make_apk.sh "$id" "${name:-$id}" /work/libpocket_native.so "$pn/games/$id/title.so" \
     "$pn/games/$id/pocket-native.apk" /work/pocket-native.keystore "$icon" | tail -1)
 echo "$package" > "$pn/games/$id/package.txt"
-echo "== done: scripts/android/install.sh $id puts ${name:-$id} on the handheld over adb"
+printf '%s\n' "${name:-$id}" > "$pn/games/$id/name.txt"
+# for build.sh --install, which game this was
+echo "$id" > /work/last-built
+echo "== done: scripts/android/install.sh \"${name:-$id}\" puts it on the handheld over adb"

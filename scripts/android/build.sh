@@ -1,25 +1,27 @@
 #!/bin/bash
-# build.sh <rom>... [--keys aes_keys.txt] [--out dir]
+# build.sh <rom>... [--keys aes_keys.txt] [--out dir] [--install]
 #
 # Builds Pocket Native and games for Android handhelds (the Anbernic RG DS
 # under GammaOS Next first) from your own ROMs, decrypted .3ds/.cci files or
 # .cia files with your console's aes_keys.txt, inside a container (podman or
 # docker). Leaves "Pocket Native Android" in the output directory, build/ by
-# default, which scripts/android/probe.sh pushes to the handheld with adb.
+# default, which scripts/android/install.sh puts on the handheld with adb,
+# or --install does right after each game builds.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-roms=() keys="" out="$repo/build"
+roms=() keys="" out="$repo/build" install=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --keys) keys="$(realpath "$2")"; shift 2 ;;
         --out) out="$(realpath -m "$2")"; shift 2 ;;
-        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+        --install) install=1; shift ;;
+        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
         *) roms+=("$(realpath -m "$1")"); shift ;;
     esac
 done
 if [ ${#roms[@]} -eq 0 ]; then
-    echo "usage: scripts/android/build.sh <rom>... [--keys aes_keys.txt] [--out dir]"
+    echo "usage: scripts/android/build.sh <rom>... [--keys aes_keys.txt] [--out dir] [--install]"
     exit 2
 fi
 for rom in "${roms[@]}"; do
@@ -52,7 +54,10 @@ for rom in "${roms[@]}"; do
         args+=("/keys/$(basename "$rom_keys")")
     fi
     "$engine" run --rm "${user[@]}" "${mounts[@]}" -e CARGO_HOME=/work/cargo -e CARGO_TARGET_DIR=/work/target -e HOME=/work \
-        "$image" bash /src/scripts/android/inside.sh "${args[@]}" || failed+=("$rom")
+        "$image" bash /src/scripts/android/inside.sh "${args[@]}" || { failed+=("$rom"); continue; }
+    if [ $install = 1 ]; then
+        bash "$repo/scripts/android/install.sh" "$(cat "$out/.work-android/last-built")" --out "$out" || failed+=("$rom (install)")
+    fi
 done
 if [ ${#failed[@]} -gt 0 ]; then
     printf '== these did not build:\n'

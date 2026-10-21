@@ -1,6 +1,8 @@
 #!/bin/bash
-# probe.sh <title id> [frames] [--out dir] [--serial id]
+# probe.sh [game] [frames] [--out dir] [--serial id]
 #
+# The game is named as scripts/android/install.sh takes it: any part of its
+# name, its title id, or none for the only one built or one from a list.
 # Pushes "Pocket Native Android" from the output directory (build/ by
 # default) to the handheld with adb, probes the game there as
 # device/probe.sh does, and pulls the report back into
@@ -14,12 +16,13 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$(realpath -m "$2")"; shift 2 ;;
         --serial) adb=(adb -s "$2"); shift 2 ;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
-        *) if [ -z "$id" ]; then id="$1"; else frames="$1"; fi; shift ;;
+        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+        # a number of frames is a short number; a title id is sixteen digits
+        *) if [[ "$1" =~ ^[0-9]{1,9}$ ]]; then frames="$1"; else id="$1"; fi; shift ;;
     esac
 done
-[ -n "$id" ] || { echo "usage: scripts/android/probe.sh <title id> [frames]"; exit 2; }
 local_dir="$out/Pocket Native Android/pocket-native"
+id=$(bash "$repo/scripts/android/pick_game.sh" "$local_dir/games" "$id")
 [ -f "$local_dir/games/$id/title.so" ] || { echo "no $id in $local_dir, build it with scripts/android/build.sh first"; exit 2; }
 command -v adb >/dev/null || { echo "adb is not installed (Android platform-tools)"; exit 1; }
 
