@@ -205,7 +205,7 @@ impl AAudio {
         // the sound to fill it for ever
         let burst = stream.frames_per_burst().max(64);
         let rate = stream.sample_rate().max(1) as f64;
-        let wanted = ((AAUDIO_TARGET * 2.0 * rate) as i32).div_ceil(burst).max(2) * burst;
+        let wanted = ((AAUDIO_TARGET * 2.0 * rate) as u32).div_ceil(burst as u32).max(2) as i32 * burst;
         let size = stream.set_buffer_size_in_frames(wanted).unwrap_or(0);
         if let Err(error) = stream.request_start() {
             log::warn!("could not start AAudio, playing without sound, {error:?}");
