@@ -3442,11 +3442,10 @@ impl Gles {
         if *CPU.get_or_init(cpu) {
             return Ok(false);
         }
-        // the output one run of bytes, a texture of its own
-        if size == 0 || !(output_lines.0 == 0 || output_lines.1 == 0) {
+        if size == 0 {
             return Ok(false);
         }
-        let Some((addr, width, column, copy, format)) = self.surfaces.iter().find_map(|s| {
+        let Some((addr, width, column, copy, output_width, format)) = self.surfaces.iter().find_map(|s| {
             let Kind::Color(format) = s.kind else { return None };
             if !s.tiled || s.dirty.is_none() {
                 return None;
@@ -3469,7 +3468,15 @@ impl Gles {
                 return None;
             }
             let (row, column) = (offset / tile_row * 8, start / tile * 8);
-            Some((s.addr + row / 8 * tile_row, s.width, column, (line / bpp / 8, size / line * 8), format))
+            // the output one run of bytes, a texture just as wide, or lines
+            // as long as the input's with whole tiles between them, the
+            // left of a wider texture's rows of tiles
+            let output_width = match output_lines {
+                (0, _) | (_, 0) => line / bpp / 8,
+                (bytes, skip) if bytes == line && skip.is_multiple_of(tile) => (bytes + skip) / bpp / 8,
+                _ => return None,
+            };
+            Some((s.addr + row / 8 * tile_row, s.width, column, (line / bpp / 8, size / line * 8), output_width, format))
         }) else {
             return Ok(false);
         };
@@ -3478,7 +3485,7 @@ impl Gles {
             output,
             input_width: width,
             input_height: copy.1,
-            output_width: copy.0,
+            output_width,
             output_height: copy.1,
             copy,
             scale: (1, 1),
@@ -5310,6 +5317,27 @@ mod tests {
                 assert!(gles.texture_copy(&mut memory, start, target, size, (line, skip), (line, 0)).unwrap(), "{format:?} {first_tile} {tiles}");
                 gles.flush(&mut memory).unwrap();
                 assert_eq!(&memory.0[target as usize..(target + size) as usize], &expected[..], "{format:?} {first_tile} {tiles}");
+            }
+            // into the same layout, gaps and all, as its battles save the
+            // picture: the columns between the lines keep what was there
+            {
+                let index = gles.surfaces.iter().position(|s| s.addr == source && s.kind == Kind::Color(format)).unwrap();
+                gles.surfaces[index].drew((0, height));
+                let (line, skip) = (tile_rows - tile, tile);
+                let size = line * 2;
+                let target = 0x14000usize;
+                for (i, byte) in memory.0[target..target + 2 * tile_rows as usize].iter_mut().enumerate() {
+                    *byte = (i * 11) as u8;
+                }
+                let mut expected = memory.0[target..target + 2 * tile_rows as usize].to_vec();
+                for i in 0..2usize {
+                    let from = (source + tile_rows) as usize + i * tile_rows as usize;
+                    let to = i * tile_rows as usize;
+                    expected[to..to + line as usize].copy_from_slice(&memory.0[from..from + line as usize]);
+                }
+                assert!(gles.texture_copy(&mut memory, source + tile_rows, target as u32, size, (line, skip), (line, skip)).unwrap(), "{format:?} strided");
+                gles.flush(&mut memory).unwrap();
+                assert_eq!(&memory.0[target..target + 2 * tile_rows as usize], &expected[..], "{format:?} strided");
             }
             // not starting on a tile is the CPU's
             assert!(!gles.texture_copy(&mut memory, source + 16, target, tile_rows, (0, 0), (0, 0)).unwrap());
