@@ -72,6 +72,7 @@ uniform int flip;
 uniform int input_format;
 uniform int output_format;
 uniform int source_row;
+uniform int source_column;
 uniform int source_height;
 
 uint expand(uint value, uint bits) {
@@ -107,7 +108,7 @@ void main() {
                 y = input_height - 1 - y;
             }
             int row = source_height - 1 - (source_row + y);
-            vec4 texel = imageLoad(source, ivec2(x, row));
+            vec4 texel = imageLoad(source, ivec2(source_column + x, row));
             sum += quantize(uvec4(round(texel * 255.0)), input_format);
         }
     }
@@ -3440,35 +3441,52 @@ impl Gles {
         if *CPU.get_or_init(cpu) {
             return Ok(false);
         }
-        // one run of bytes either side, which is all a copy of whole tile
-        // rows is
-        let contiguous = |(width, skip): (u32, u32)| width == 0 || skip == 0;
-        if size == 0 || !contiguous(input_lines) || !contiguous(output_lines) {
+        // the output one run of bytes, a texture of its own
+        if size == 0 || !(output_lines.0 == 0 || output_lines.1 == 0) {
             return Ok(false);
         }
-        let Some((width, rows, format)) = self.surfaces.iter().find_map(|s| {
+        let Some((addr, width, column, copy, format)) = self.surfaces.iter().find_map(|s| {
             let Kind::Color(format) = s.kind else { return None };
-            let tile_rows = 8 * s.row_bytes();
+            if !s.tiled || s.dirty.is_none() {
+                return None;
+            }
+            let bpp = s.kind.bytes();
+            let (tile, tile_row) = (64 * bpp, 8 * s.row_bytes());
             let offset = input.checked_sub(s.addr)?;
-            let fits = s.tiled && s.dirty.is_some() && offset % tile_rows == 0 && size % tile_rows == 0 && offset + size <= s.size();
-            fits.then_some((s.width, size / tile_rows * 8, format))
+            if offset + size > s.size() || !offset.is_multiple_of(tile) {
+                return None;
+            }
+            // a line of the input is whole rows of tiles, or the same few
+            // tiles of each row of tiles, part of the picture's width
+            let line = match input_lines {
+                (0, _) | (_, 0) => tile_row,
+                (bytes, skip) if bytes + skip == tile_row => bytes,
+                _ => return None,
+            };
+            let start = offset % tile_row;
+            if !line.is_multiple_of(tile) || !size.is_multiple_of(line) || start + line > tile_row || (line == tile_row && start != 0) {
+                return None;
+            }
+            let (row, column) = (offset / tile_row * 8, start / tile * 8);
+            Some((s.addr + row / 8 * tile_row, s.width, column, (line / bpp / 8, size / line * 8), format))
         }) else {
             return Ok(false);
         };
         let transfer = Transfer {
-            input,
+            input: addr,
             output,
             input_width: width,
-            input_height: rows,
-            output_width: width,
-            output_height: rows,
-            copy: (width, rows),
+            input_height: copy.1,
+            output_width: copy.0,
+            output_height: copy.1,
+            copy,
             scale: (1, 1),
             flip: false,
             input_linear: false,
             output_tiled: true,
             input_format: format,
             output_format: format,
+            column,
         };
         self.display_transfer_on_gpu(memory, &transfer)
     }
@@ -3565,6 +3583,7 @@ impl Gles {
             int("input_format", format_index(t.input_format));
             int("output_format", format_index(t.output_format));
             int("source_row", row as i32);
+            int("source_column", t.column as i32);
             int("source_height", input_size.1 as i32);
             gl.bind_image_texture(0, Some(source_texture), 0, false, 0, glow::READ_ONLY, glow::RGBA8);
             gl.bind_image_texture(1, Some(target_texture), 0, false, 0, glow::WRITE_ONLY, glow::RGBA8);
@@ -5100,10 +5119,10 @@ mod tests {
                 return;
             }
         };
-        let (source, target, width, height) = (0x1000u32, 0x8000u32, 32u32, 24u32);
+        let (source, target, width, height) = (0x1000u32, 0x8000u32, 32u32, 32u32);
         for format in [ColorFormat::Rgba8, ColorFormat::Rgb565] {
             let size = width * height * format.bytes_per_pixel() as u32;
-            let mut memory = Flat(vec![0; 0x10000]);
+            let mut memory = Flat(vec![0; 0x20000]);
             for (i, byte) in memory.0[source as usize..(source + size) as usize].iter_mut().enumerate() {
                 *byte = (i * 37 + i / 5) as u8;
             }
@@ -5116,7 +5135,28 @@ mod tests {
             let copied = &memory.0[target as usize..(target + 2 * tile_rows) as usize];
             let original = &memory.0[(source + tile_rows) as usize..(source + 3 * tile_rows) as usize];
             assert_eq!(copied, original, "{format:?}");
-            // not whole rows of tiles is the CPU's
+            // part of the width, the way Fire Emblem Awakening copies a
+            // strip of its picture for an effect: lines of a few tiles, the
+            // rest of each row of tiles skipped, as the CPU would copy it
+            let tile = 64 * format.bytes_per_pixel() as u32;
+            for (first_tile, tiles, rows_of_tiles) in [(0u32, 2u32, 3u32), (1, 1, 2), (2, 2, 1)] {
+                let start = source + tile_rows + first_tile * tile;
+                let (line, skip) = (tiles * tile, tile_rows - tiles * tile);
+                let size = line * rows_of_tiles;
+                let mut expected = Vec::new();
+                for i in 0..rows_of_tiles {
+                    let at = (start + i * (line + skip)) as usize;
+                    expected.extend_from_slice(&memory.0[at..at + line as usize]);
+                }
+                let target = 0xC000;
+                // drawn again, the last check wrote it back
+                let index = gles.surfaces.iter().position(|s| s.addr == source && s.kind == Kind::Color(format)).unwrap();
+                gles.surfaces[index].drew((0, height));
+                assert!(gles.texture_copy(&mut memory, start, target, size, (line, skip), (line, 0)).unwrap(), "{format:?} {first_tile} {tiles}");
+                gles.flush(&mut memory).unwrap();
+                assert_eq!(&memory.0[target as usize..(target + size) as usize], &expected[..], "{format:?} {first_tile} {tiles}");
+            }
+            // not starting on a tile is the CPU's
             assert!(!gles.texture_copy(&mut memory, source + 16, target, tile_rows, (0, 0), (0, 0)).unwrap());
         }
     }

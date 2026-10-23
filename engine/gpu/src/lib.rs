@@ -744,6 +744,7 @@ impl Gpu {
                 output_tiled,
                 input_format,
                 output_format,
+                column: 0,
             };
             match hardware.display_transfer(memory, &transfer) {
                 Ok(true) => {
