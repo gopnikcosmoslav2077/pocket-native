@@ -843,9 +843,22 @@ impl Gpu {
         // every line and the gaps between them
         let span = |width: u32, skip: u32| if width == 0 { size } else { size + size.div_ceil(width) * skip };
         let (input, output) = (memory.translate(input_paddr), memory.translate(output_paddr));
-        self.sync_memory_for(memory, input, span(input_width, input_skip), "sync for a copy from");
         let output_width = (output_gap & 0xFFFF) * 16;
         let output_skip = (output_gap >> 16) * 16;
+        // a copy of what the host GPU drew it does itself, without reading
+        // the picture back
+        #[cfg(feature = "gles")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            match hardware.texture_copy(memory, input, output, size, (input_width, input_skip), (output_width, output_skip)) {
+                Ok(true) => {
+                    self.transfers += 1;
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => log::error!("the GPU could not copy a texture, {error}"),
+            }
+        }
+        self.sync_memory_for(memory, input, span(input_width, input_skip), "sync for a copy from");
         self.sync_memory_for(memory, output, span(output_width, output_skip), "sync for a copy into");
 
         log::debug!(
