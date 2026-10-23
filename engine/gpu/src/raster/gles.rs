@@ -498,7 +498,7 @@ pub(crate) fn sync_why(why: &'static str) {
 fn left_to_cpu(what: &str, input: u32, len: u32, details: String, surfaces: &[Surface]) {
     static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let Some(s) = surfaces.iter().find(|s| s.dirty_overlaps(input, len)) else { return };
-    if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 60 {
+    if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 200 {
         return;
     }
     log::info!(
@@ -4361,8 +4361,13 @@ impl Gles {
         Ok(true)
     }
 
-    pub(crate) fn prepare_read<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) -> Result<(), String> {
+    pub(crate) fn prepare_read<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32, texture: Option<&crate::raster::DrawnTexture>) -> Result<(), String> {
         if self.surfaces.iter().any(|s| s.dirty_overlaps(addr, len)) {
+            let details = match texture {
+                Some(t) => format!("a {}x{} {:?} texture", t.width, t.height, t.format),
+                None => "a texture in a format no drawing has".to_owned(),
+            };
+            left_to_cpu("a texture read", addr, len, details, &self.surfaces);
             sync_why("sync to read");
             self.sync(memory, addr, len)?;
         }
