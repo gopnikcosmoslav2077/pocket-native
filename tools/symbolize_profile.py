@@ -10,6 +10,7 @@ game's functions are named after the 3DS address they start at.
 """
 
 import collections
+import re
 import struct
 import subprocess
 import sys
@@ -62,10 +63,15 @@ def main():
 
     samples = collections.Counter()
     for line in open(profile, errors="replace"):
+        # a thread's name can have spaces in it, the file is where the
+        # first word that is a path or ? comes before a hex offset
         parts = line.split()
-        if len(parts) < 3:
+        for i in range(1, len(parts) - 1):
+            if parts[i][:1] in "/?[" and re.fullmatch(r"[0-9a-f]+", parts[i + 1]):
+                thread, path, offset = " ".join(parts[:i]), parts[i], int(parts[i + 1], 16)
+                break
+        else:
             continue
-        thread, path, offset = parts[0], parts[1], int(parts[2], 16)
         place = (path.rsplit("/", 1)[-1], offset)
         if path.endswith(".apk"):
             for name, (start, size) in stored.items():
