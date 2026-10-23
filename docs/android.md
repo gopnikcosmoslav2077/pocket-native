@@ -65,6 +65,17 @@ scripts/android/install.sh "alpha sapphire"           # a game by any part of it
 scripts/android/install.sh "alpha sapphire" --log     # pulls its log
 ```
 
+`install.sh --log` also brings back where the game ran code the recompiler
+missed, which the engine notes in `libtitle.hints` beside the game; the next
+`build.sh` of that game recompiles it ("of the places Zakuro interpreted, N
+become ways into functions and M start new ones"). A game busy on its CPU
+gets faster from one round of play, --log and build.
+
+Switches a shell would set go in the app's `data/env.txt`, one `NAME=value`
+a line, read when the app starts, and the log says which it took, for
+example `ZAKURO_GLES_TIMES=1` and `ZAKURO_DRAW_STATS=1` for where the GPU's
+time goes, or `ZAKURO_HOST_PROFILE=1800,600` for where the CPU's goes.
+
 A game is named by any part of its name, in any case, accents or not
 ("pokemon x" finds Pokémon X), or by its title id; with none named,
 `install.sh` takes the only game built, or lists them to pick one by number.

@@ -107,6 +107,8 @@ pub fn run(mut args: Vec<String>) {
             logger.target(env_logger::Target::Pipe(Box::new(file)));
         }
         logger.init();
+        #[cfg(target_os = "android")]
+        android::log_switches();
     }
     let Some(path) = args.first().cloned() else {
         eprintln!("usage: pocket-native <rom>, or pocket-native --probe <rom> [frames]");

@@ -121,11 +121,24 @@ fn set_up(files: &Path, data: &Path) {
     // data/env.txt, NAME=value a line, sets the switches a shell would, for
     // trying one without a new build: ZAKURO_HOST_PROFILE=1800,600 and the like
     if let Ok(text) = std::fs::read_to_string(data.join("env.txt")) {
+        let mut taken = Vec::new();
         for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
             if let Some((name, value)) = line.split_once('=') {
                 std::env::set_var(name.trim(), value.trim());
+                taken.push(format!("{}={}", name.trim(), value.trim()));
             }
         }
+        let _ = SWITCHES.set(taken);
+    }
+}
+
+/// what data/env.txt set, for the log once there is one.
+static SWITCHES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// logs what data/env.txt set, so that a log says whether it was there.
+pub fn log_switches() {
+    if let Some(switches) = SWITCHES.get() {
+        log::info!("switches from data/env.txt: {}", switches.join(", "));
     }
 }
 

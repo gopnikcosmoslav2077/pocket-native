@@ -9,7 +9,9 @@
 # --internal) beside the rest (later pushes skip what has not changed), and
 # starts it. --sd names the card, as /storage lists it, where there are two.
 # USB debugging has to be on. The app's log is then in
-# /sdcard/Android/data/<package>/files/data/log.txt, which --log pulls.
+# /sdcard/Android/data/<package>/files/data/log.txt, which --log pulls, with
+# the hints of where the game ran code the recompiler missed, for the next
+# build to recompile.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -22,7 +24,7 @@ while [ $# -gt 0 ]; do
         --log) log_only=1; shift ;;
         --internal) internal=1; shift ;;
         --sd) card="$2"; shift 2 ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         *) id="$1"; shift ;;
     esac
 done
@@ -39,6 +41,18 @@ files="/sdcard/Android/data/$package/files"
 if [ $log_only = 1 ]; then
     "${adb[@]}" pull "$files/data/log.txt" "$out/log-$id.txt" >/dev/null && echo "== log in $out/log-$id.txt"
     "${adb[@]}" pull "$files/data/panic.txt" "$out/panic-$id.txt" >/dev/null 2>&1 && echo "== and a panic, in $out/panic-$id.txt"
+    # where the game ran code the recompiler missed, which the next build
+    # recompiles: the build container's HOME is the work folder, where
+    # 3dsrecomp looks for <title id>.hints
+    hints="$out/.work-android/.local/share/3dsrecomp"
+    mkdir -p "$hints"
+    if "${adb[@]}" pull "$files/libtitle.hints" "$hints/$id.hints.new" >/dev/null 2>&1; then
+        # what the handheld found, added to what earlier pulls found
+        { cat "$hints/$id.hints.new"; cat "$hints/$id.hints" 2>/dev/null || true; } | { grep -v '^#' || true; } | sort -u > "$hints/$id.hints.merged"
+        mv "$hints/$id.hints.merged" "$hints/$id.hints"
+        rm -f "$hints/$id.hints.new"
+        echo "== $(wc -l < "$hints/$id.hints") places the game ran uncompiled code; the next build of it recompiles them"
+    fi
     exit 0
 fi
 
