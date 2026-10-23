@@ -3353,6 +3353,9 @@ pub struct Gles {
     copiers: Option<([glow::Program; 3], glow::VertexArray)>,
     copies: rustc_hash::FxHashMap<DrawnTexture, (glow::Texture, glow::Framebuffer)>,
     copied: rustc_hash::FxHashMap<DrawnTexture, (glow::Texture, u64, u32)>,
+    /// the memory rows a texture over a drawing last had, to upload them
+    /// again only when they change.
+    over_drawing: rustc_hash::FxHashMap<DrawnTexture, Vec<u8>>,
     flushes: u64,
     /// display transfers so far, the clock occlusion culling keeps time by.
     pictures: u64,
@@ -3441,6 +3444,7 @@ impl Gles {
                 copiers: None,
                 copies: Default::default(),
                 copied: Default::default(),
+                over_drawing: Default::default(),
                 flushes: 0,
                 pictures: 0,
                 warned_logic_op: false,
@@ -3733,16 +3737,26 @@ impl Gles {
         let (([color, _, _], empty), (copy, framebuffer)) = self.copy_objects(texture)?;
         let (width, height) = (texture.width, texture.height);
         let bpp = texture.format.bytes_per_pixel();
-        let mut bytes = vec![0u8; (lead * width) as usize * bpp];
-        memory.read(texture.addr, &mut bytes);
+        let length = (lead * width) as usize * bpp;
+        // the memory rows, compared with what they were rather than hashed,
+        // which a byte at a time took a fifth of the GPU thread's time
+        let unchanged = match (memory.slice(texture.addr, length), self.over_drawing.get(texture)) {
+            (Some(now), Some(before)) => now == &before[..],
+            (None, Some(before)) => {
+                let mut now = vec![0u8; length];
+                memory.read(texture.addr, &mut now);
+                now == *before
+            }
+            (_, None) => false,
+        };
         let surface = &self.surfaces[source];
-        // the memory's rows count in the stamp, as a hash with the drawing's
-        // version, so an unchanged texture is not copied again
-        let hashed = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &byte| (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3));
-        let stamp = (surface.texture, surface.version ^ hashed, u32::MAX - lead);
-        if self.copied.insert(*texture, stamp) == Some(stamp) {
+        let stamp = (surface.texture, surface.version, u32::MAX - lead);
+        let drawn_again = self.copied.insert(*texture, stamp) != Some(stamp);
+        if unchanged && !drawn_again {
             return Ok(copy);
         }
+        let mut bytes = vec![0u8; length];
+        memory.read(texture.addr, &mut bytes);
         let image = surface.texture;
         // the copy's row y is the texture's row y, the drawing's first row
         // the texture's row lead
@@ -3754,14 +3768,18 @@ impl Gles {
             ColorFormat::Rgb5A1 => [31.0, 31.0, 31.0, 1.0],
             ColorFormat::Rgba4 => [15.0; 4],
         };
-        let mut rows = vec![0u8; (lead * width * 4) as usize];
-        for y in 0..lead {
-            for x in 0..width {
-                let at = pixel_offset(true, x, y, width, bpp as u32);
-                let out = ((y * width + x) * 4) as usize;
-                rows[out..out + 4].copy_from_slice(&texture.format.decode(&bytes[at..at + bpp]));
+        let rows = (!unchanged).then(|| {
+            let mut rows = vec![0u8; (lead * width * 4) as usize];
+            for y in 0..lead {
+                for x in 0..width {
+                    let at = pixel_offset(true, x, y, width, bpp as u32);
+                    let out = ((y * width + x) * 4) as usize;
+                    rows[out..out + 4].copy_from_slice(&texture.format.decode(&bytes[at..at + bpp]));
+                }
             }
-        }
+            rows
+        });
+        self.over_drawing.insert(*texture, bytes);
         let gl = self.gl;
         self.worker.post_keeping(move || {
             flush_clears(Some(image));
@@ -3790,8 +3808,10 @@ impl Gles {
                 gl.uniform_4_f32_slice(gl.get_uniform_location(color, "levels").as_ref(), &levels);
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
                 gl.disable(glow::SCISSOR_TEST);
-                gl.bind_texture(glow::TEXTURE_2D, Some(copy));
-                gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, width as i32, lead as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&rows)));
+                if let Some(rows) = &rows {
+                    gl.bind_texture(glow::TEXTURE_2D, Some(copy));
+                    gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, width as i32, lead as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(rows)));
+                }
             }
         });
         Ok(copy)
@@ -5649,6 +5669,15 @@ mod tests {
         // memory's rows first, then the drawing's
         let over = DrawnTexture { addr: base, width, height: lead + drawn, format };
         assert!(gles.holds(&over));
+        gles.copy_texture(&mut memory, &over).unwrap();
+        assert_eq!(read_copy(&mut gles, &over), decoded(&memory, base, lead + drawn));
+        // again unchanged, then with memory's rows changed, which the copy
+        // takes up
+        gles.copy_texture(&mut memory, &over).unwrap();
+        assert_eq!(read_copy(&mut gles, &over), decoded(&memory, base, lead + drawn));
+        for byte in &mut memory.0[base as usize..base as usize + 64] {
+            *byte ^= 0x5A;
+        }
         gles.copy_texture(&mut memory, &over).unwrap();
         assert_eq!(read_copy(&mut gles, &over), decoded(&memory, base, lead + drawn));
         // the drawing stayed on the GPU
