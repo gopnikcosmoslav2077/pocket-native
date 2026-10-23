@@ -425,7 +425,12 @@ impl System {
                 self.interpreted_instructions += 1;
                 interpreted_at(pc | self.cpu.cpsr.thumb as u32);
                 let thumb = self.cpu.cpsr.thumb;
-                if let (Some(hints), Some(library)) = (&mut self.hints, &self.recompiled) {
+                // the interpreter going on from a block the library had no
+                // budget to start, under exact event timing, is no code the
+                // library misses, a way into it would only slow it down
+                let (_, why, thread) = self.library_left;
+                let artefact = why == "no budget for a block" && thread == self.kernel.current_thread;
+                if let (Some(hints), Some(library), false) = (&mut self.hints, &self.recompiled, artefact) {
                     if !library.has_code(pc | thumb as u32) && hints.interpreted(pc, thumb) && self.hints_logged < 300 {
                         self.hints_logged += 1;
                         let before = self.history[(self.history_index + HISTORY_LENGTH - 2) % HISTORY_LENGTH];

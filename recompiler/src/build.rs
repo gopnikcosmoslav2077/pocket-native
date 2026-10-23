@@ -179,6 +179,12 @@ pub fn apply_hints(title: &Title, programs: &mut [(String, Program)], analyses: 
         program.seeds.extend(outside.iter().map(|&address| (address, Source::Hint)));
         analyses[index] = discover::analyze(program);
     }
+    // RECOMP_HINT_LABELS=0 leaves out the places inside functions found
+    // already, which only an interrupted interpreter lands on: thousands of
+    // ways into a hot function keep the C compiler from optimizing it
+    if std::env::var("RECOMP_HINT_LABELS").is_ok_and(|value| value == "0") {
+        return (0, outside.len());
+    }
     let owners = owners(&analyses[index]);
     let mut labels = 0;
     for address in hinted.iter().filter(|address| !outside.contains(address)) {
