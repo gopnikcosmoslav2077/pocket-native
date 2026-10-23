@@ -73,6 +73,7 @@ uniform int input_format;
 uniform int output_format;
 uniform int source_row;
 uniform int source_column;
+uniform int target_row;
 uniform int source_height;
 
 uint expand(uint value, uint bits) {
@@ -114,7 +115,7 @@ void main() {
     }
     uint count = uint(scale.x * scale.y);
     uvec4 pixel = quantize((sum + count / 2u) / count, output_format);
-    imageStore(target, ivec2(at.x, output_height - 1 - at.y), vec4(pixel) / 255.0);
+    imageStore(target, ivec2(at.x, output_height - 1 - (target_row + at.y)), vec4(pixel) / 255.0);
 }
 "#;
 
@@ -3541,7 +3542,7 @@ impl Gles {
             .max_by_key(|(s, _)| (s.dirty.is_some(), s.height))
             .map(|(s, row)| (s.addr, (s.width, s.height), row))
         else {
-            return Ok(false);
+            return self.transfer_below_memory(memory, t);
         };
         let input_end = addr as u64 + (input_size.0 * input_size.1 * input_kind.bytes()) as u64;
         let output_end = t.output as u64 + (t.output_width * t.output_height * output_kind.bytes()) as u64;
@@ -3584,11 +3585,106 @@ impl Gles {
             int("output_format", format_index(t.output_format));
             int("source_row", row as i32);
             int("source_column", t.column as i32);
+            int("target_row", 0);
             int("source_height", input_size.1 as i32);
             gl.bind_image_texture(0, Some(source_texture), 0, false, 0, glow::READ_ONLY, glow::RGBA8);
             gl.bind_image_texture(1, Some(target_texture), 0, false, 0, glow::WRITE_ONLY, glow::RGBA8);
             gl.dispatch_compute(t.copy.0.div_ceil(8), t.copy.1.div_ceil(8), 1);
             gl.memory_barrier(glow::ALL_BARRIER_BITS);
+        });
+        let target = &mut self.surfaces[target];
+        target.drew((0, target.height));
+        target.screen_batch += 1;
+        self.end_batch();
+        Ok(true)
+    }
+
+    /// a display transfer whose input starts with rows nothing drew and
+    /// goes on into a drawing to its end, as Fire Emblem Awakening shrinks
+    /// its picture for an effect: the rows from memory and the drawing each
+    /// go through the transfer on the GPU, into their parts of the output,
+    /// rather than the drawing being read back for the CPU.
+    fn transfer_below_memory<M: GpuMemory>(&mut self, memory: &mut M, t: &Transfer) -> Result<bool, String> {
+        if t.flip || t.input_linear || t.column != 0 {
+            return Ok(false);
+        }
+        let (input_kind, output_kind) = (Kind::Color(t.input_format), Kind::Color(t.output_format));
+        let tile_rows = 8 * t.input_width * input_kind.bytes();
+        let rows = t.copy.1 * t.scale.1;
+        let Some((addr, size, lead)) = self.surfaces.iter().find_map(|s| {
+            let offset = s.addr.checked_sub(t.input).filter(|&offset| offset > 0 && offset % tile_rows == 0)?;
+            let lead = offset / tile_rows * 8;
+            let fits = s.kind == input_kind && s.tiled && s.width == t.input_width && s.dirty.is_some() && lead < rows && lead % t.scale.1 == 0 && rows <= lead + s.height;
+            fits.then_some((s.addr, (s.width, s.height), lead))
+        }) else {
+            return Ok(false);
+        };
+        // the rows before the drawing come from memory as they are, which
+        // another drawing there would make a read back again
+        let lead_bytes = lead / 8 * tile_rows;
+        if self.surfaces.iter().any(|s| s.dirty_overlaps(t.input, lead_bytes)) {
+            return Ok(false);
+        }
+        let input_end = addr as u64 + (size.0 * size.1 * input_kind.bytes()) as u64;
+        let output_end = t.output as u64 + (t.output_width * t.output_height * output_kind.bytes()) as u64;
+        if (t.input as u64) < output_end && (t.output as u64) < input_end {
+            return Ok(false);
+        }
+        self.current()?;
+        let (before, drawing, target) = loop {
+            let before = self.surface_rows(memory, t.input, (t.input_width, lead), input_kind, true, None)?;
+            let drawing = self.surface_rows(memory, addr, size, input_kind, true, None)?;
+            let target = self.surface_rows(memory, t.output, (t.output_width, t.output_height), output_kind, t.output_tiled, None)?;
+            if [before, drawing, target].iter().all(|&i| self.surfaces[i].checked) {
+                break (before, drawing, target);
+            }
+        };
+        let program = match self.transfer {
+            Some(program) => program,
+            None => {
+                let worker = self.worker.clone();
+                let program = worker.run(|| self.compute(TRANSFER_SOURCE))?;
+                self.transfer = Some(program);
+                program
+            }
+        };
+        let gl = self.gl;
+        let t = t.clone();
+        let split = lead / t.scale.1;
+        // each part: its source, the source's height, and the output rows
+        // it fills, from and how many
+        let parts = [
+            (self.surfaces[before].texture, lead, 0, split),
+            (self.surfaces[drawing].texture, size.1, split, t.copy.1 - split),
+        ];
+        let target_texture = self.surfaces[target].texture;
+        self.worker.post(move || unsafe {
+            disturb();
+            // SAFETY: on the GL thread, every texture has immutable rgba8
+            // storage and each dispatch stays inside them
+            gl.use_program(Some(program));
+            let int = |name: &str, value: i32| gl.uniform_1_i32(gl.get_uniform_location(program, name).as_ref(), value);
+            let pair = |name: &str, x: u32, y: u32| gl.uniform_2_i32(gl.get_uniform_location(program, name).as_ref(), x as i32, y as i32);
+            pair("scale", t.scale.0, t.scale.1);
+            int("input_height", t.input_height as i32);
+            int("output_height", t.output_height as i32);
+            int("flip", 0);
+            int("input_format", format_index(t.input_format));
+            int("output_format", format_index(t.output_format));
+            int("source_row", 0);
+            int("source_column", 0);
+            gl.bind_image_texture(1, Some(target_texture), 0, false, 0, glow::WRITE_ONLY, glow::RGBA8);
+            for (source, height, first, count) in parts {
+                if count == 0 {
+                    continue;
+                }
+                pair("size", t.copy.0, count);
+                int("source_height", height as i32);
+                int("target_row", first as i32);
+                gl.bind_image_texture(0, Some(source), 0, false, 0, glow::READ_ONLY, glow::RGBA8);
+                gl.dispatch_compute(t.copy.0.div_ceil(8), count.div_ceil(8), 1);
+                gl.memory_barrier(glow::ALL_BARRIER_BITS);
+            }
         });
         let target = &mut self.surfaces[target];
         target.drew((0, target.height));
@@ -5108,6 +5204,65 @@ mod tests {
         fn write(&mut self, addr: u32, data: &[u8]) {
             self.0[addr as usize..addr as usize + data.len()].copy_from_slice(data);
         }
+    }
+
+    #[test]
+    fn a_shrinking_transfer_from_memory_into_a_drawing_matches_the_console() {
+        let mut gles = match Gles::new() {
+            Ok(gles) => gles,
+            Err(error) => {
+                eprintln!("no OpenGL ES here, skipped: {error}");
+                return;
+            }
+        };
+        let format = ColorFormat::Rgba8;
+        let (input, output, width, lead, drawn) = (0x1000u32, 0x10000u32, 32u32, 16u32, 32u32);
+        let mut memory = Flat(vec![0; 0x20000]);
+        let bytes = width * (lead + drawn) * 4;
+        for (i, byte) in memory.0[input as usize..(input + bytes) as usize].iter_mut().enumerate() {
+            *byte = (i * 37 + i / 5) as u8;
+        }
+        // the drawing starts two rows of tiles in, as Fire Emblem Awakening's
+        let drawing = input + lead / 8 * 8 * width * 4;
+        let index = gles.surface_rows(&mut memory, drawing, (width, drawn), Kind::Color(format), true, None).unwrap();
+        gles.surfaces[index].drew((0, drawn));
+        let (out_width, out_height) = (width / 2, (lead + drawn) / 2);
+        let transfer = Transfer {
+            input,
+            output,
+            input_width: width,
+            input_height: lead + drawn,
+            output_width: out_width,
+            output_height: out_height,
+            copy: (out_width, out_height),
+            scale: (2, 2),
+            flip: false,
+            input_linear: false,
+            output_tiled: true,
+            input_format: format,
+            output_format: format,
+            column: 0,
+        };
+        let mut expected = vec![0u8; (out_width * out_height * 4) as usize];
+        for y in 0..out_height {
+            for x in 0..out_width {
+                let mut sum = [0u32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let at = (input + pixel_offset(true, x * 2 + dx, y * 2 + dy, width, 4) as u32) as usize;
+                    let pixel = format.decode(&memory.0[at..at + 4]);
+                    for c in 0..4 {
+                        sum[c] += pixel[c] as u32;
+                    }
+                }
+                let at = pixel_offset(true, x, y, out_width, 4);
+                format.encode(sum.map(|c| ((c + 2) / 4) as u8), &mut expected[at..at + 4]);
+            }
+        }
+        assert!(gles.display_transfer(&mut memory, &transfer).unwrap());
+        // the drawing stayed on the GPU, nothing read it back
+        assert!(gles.surfaces.iter().any(|s| s.addr == drawing && s.dirty.is_some()));
+        gles.flush(&mut memory).unwrap();
+        assert_eq!(&memory.0[output as usize..output as usize + expected.len()], &expected[..]);
     }
 
     #[test]
