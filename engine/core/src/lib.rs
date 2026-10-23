@@ -891,7 +891,7 @@ impl System {
             linear_base,
             memory: &mut self.memory,
         };
-        self.gpu.sync_memory(&mut guest, addr, len);
+        self.gpu.sync_memory_for(&mut guest, addr, len, from);
     }
 
     /// lets the GPU know a range is about to be written whole: what it drew
@@ -1257,7 +1257,7 @@ fn screen_pixels(gpu: &mut Gpu, guest: &mut GuestMemory, screen: zakuro_common::
 
     let base = guest.translate(address);
     let source_len = (stride * width) as usize;
-    gpu.sync_memory(guest, base, source_len as u32);
+    gpu.sync_memory_for(guest, base, source_len as u32, "sync to show a screen");
     let mut source = vec![0u8; source_len];
     guest.read(base, &mut source);
 
