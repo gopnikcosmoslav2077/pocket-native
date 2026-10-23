@@ -17,11 +17,20 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 extern "C" fn sampled(_: i32, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     // SAFETY: the kernel hands the handler the interrupted context
     let (pc, lr) = unsafe {
-        let context = &(*(context as *const libc::ucontext_t)).uc_mcontext;
+        // on aarch64 the registers are read where the kernel puts them:
+        // the libc crate's Android ucontext_t leaves out the padding that
+        // makes bionic's signal mask 128 bytes, as glibc's is, so its
+        // uc_mcontext is 128 bytes early and read garbage. the context
+        // starts at 176, after flags, link, stack and that mask, rounded to
+        // 16, then the fault address, x0 to x30, sp and pc
         #[cfg(target_arch = "aarch64")]
-        let pair = (context.pc, context.regs[30]);
+        let pair = {
+            const MCONTEXT: usize = 176;
+            let word = |at: usize| std::ptr::read_unaligned((context as *const u8).add(at) as *const u64);
+            (word(MCONTEXT + 8 + 32 * 8), word(MCONTEXT + 8 + 30 * 8))
+        };
         #[cfg(target_arch = "x86_64")]
-        let pair = (context.gregs[libc::REG_RIP as usize] as u64, 0);
+        let pair = ((*(context as *const libc::ucontext_t)).uc_mcontext.gregs[libc::REG_RIP as usize] as u64, 0);
         pair
     };
     // SAFETY: gettid is async-signal-safe
