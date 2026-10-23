@@ -147,6 +147,11 @@ pub struct System {
     /// the last few instruction addresses, so a fault can say how it got there.
     history: [u32; HISTORY_LENGTH],
     history_index: usize,
+    /// where and why the library last handed back, and in which thread, for
+    /// telling why a place it has no code for was reached.
+    library_left: (u32, &'static str, Option<ThreadId>),
+    /// the new hints logged so far, a few hundred tell enough.
+    hints_logged: u32,
     /// frames completed since boot.
     pub frames: u64,
     /// the console's clock at boot, in milliseconds since 1900.
@@ -229,6 +234,8 @@ impl System {
             prefetch_aborts: BTreeMap::new(),
             history: [0; HISTORY_LENGTH],
             history_index: 0,
+            library_left: (0, "", None),
+            hints_logged: 0,
             frames: 0,
             boot_clock,
             next_frame_boundary: CYCLES_PER_FRAME,
@@ -419,8 +426,15 @@ impl System {
                 interpreted_at(pc | self.cpu.cpsr.thumb as u32);
                 let thumb = self.cpu.cpsr.thumb;
                 if let (Some(hints), Some(library)) = (&mut self.hints, &self.recompiled) {
-                    if !library.has_code(pc | thumb as u32) {
-                        hints.interpreted(pc, thumb);
+                    if !library.has_code(pc | thumb as u32) && hints.interpreted(pc, thumb) && self.hints_logged < 300 {
+                        self.hints_logged += 1;
+                        let before = self.history[(self.history_index + HISTORY_LENGTH - 2) % HISTORY_LENGTH];
+                        let (left, why, thread) = self.library_left;
+                        log::info!(
+                            "new hint {:08X}: the step before was at {before:08X}, the library last stopped at {left:08X} ({why}) in thread {thread:?}, now thread {:?}",
+                            pc | thumb as u32,
+                            self.kernel.current_thread
+                        );
                     }
                 }
                 self.cpu.step(&mut self.memory)
@@ -501,6 +515,13 @@ impl System {
             (ran, stop) = library.run(&mut self.cpu, &mut self.memory, budget.max(OVERRUN_BUDGET));
         }
         self.recompiled_instructions += ran;
+        let why = match stop {
+            recompiled::Stop::Svc(_) => "an svc",
+            recompiled::Stop::Exit(_) => "an instruction it interpreted stopped",
+            recompiled::Stop::Left if ran == 0 => "no budget for a block",
+            recompiled::Stop::Left => "out of budget or out of its code",
+        };
+        self.library_left = (self.cpu.regs[15] | self.cpu.cpsr.thumb as u32, why, self.kernel.current_thread);
         if ran == 0 && matches!(stop, recompiled::Stop::Left) {
             return None;
         }
