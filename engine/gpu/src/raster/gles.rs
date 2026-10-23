@@ -490,6 +490,26 @@ pub(crate) fn sync_why(why: &'static str) {
     SYNC_WHY.with(|cell| cell.set(why));
 }
 
+/// a copy or transfer of a drawing left to the CPU, which reads it back,
+/// in the log the first few times, with the drawing it reads, for telling
+/// which a game needs done on the GPU.
+fn left_to_cpu(what: &str, input: u32, len: u32, details: String, surfaces: &[Surface]) {
+    static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let Some(s) = surfaces.iter().find(|s| s.dirty_overlaps(input, len)) else { return };
+    if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 60 {
+        return;
+    }
+    log::info!(
+        "{what} left to the CPU, {len} bytes from {input:08X}, {details}; the drawing there is {:08X} {}x{} {:?} {} rows {:?}",
+        s.addr,
+        s.width,
+        s.height,
+        s.kind,
+        if s.tiled { "tiled" } else { "linear" },
+        s.dirty
+    );
+}
+
 fn wait_from(name: &'static str) {
     let mut waits = WAITS.lock().unwrap();
     match waits.iter_mut().find(|(n, _)| *n == name) {
@@ -3682,6 +3702,15 @@ impl Gles {
     /// to be read back first, which stalls the GPU every time. false leaves
     /// it to the CPU. widths and skips are in bytes, as the copy gives them.
     pub(crate) fn texture_copy<M: GpuMemory>(&mut self, memory: &mut M, input: u32, output: u32, size: u32, input_lines: (u32, u32), output_lines: (u32, u32)) -> Result<bool, String> {
+        let done = self.texture_copy_on_gpu(memory, input, output, size, input_lines, output_lines)?;
+        if !done {
+            let details = format!("to {output:08X}, lines of (bytes, skip) {input_lines:?} into {output_lines:?}");
+            left_to_cpu("a texture copy", input, size, details, &self.surfaces);
+        }
+        Ok(done)
+    }
+
+    fn texture_copy_on_gpu<M: GpuMemory>(&mut self, memory: &mut M, input: u32, output: u32, size: u32, input_lines: (u32, u32), output_lines: (u32, u32)) -> Result<bool, String> {
         static CPU: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         // Drawn texture copies set to Memory in the menu leaves these to the
         // CPU too, the way out if one goes wrong
@@ -3719,10 +3748,35 @@ impl Gles {
             input_format: format,
             output_format: format,
         };
-        self.display_transfer(memory, &transfer)
+        self.display_transfer_on_gpu(memory, &transfer)
     }
 
     pub(crate) fn display_transfer<M: GpuMemory>(&mut self, memory: &mut M, transfer: &Transfer) -> Result<bool, String> {
+        let done = self.display_transfer_on_gpu(memory, transfer)?;
+        if !done {
+            let t = transfer;
+            let len = t.input_width * t.input_height * Kind::Color(t.input_format).bytes();
+            let details = format!(
+                "{}x{} {:?} {} to {:08X} {}x{} {:?} {}, copying {:?} scaled {:?}{}",
+                t.input_width,
+                t.input_height,
+                t.input_format,
+                if t.input_linear { "linear" } else { "tiled" },
+                t.output,
+                t.output_width,
+                t.output_height,
+                t.output_format,
+                if t.output_tiled { "tiled" } else { "linear" },
+                t.copy,
+                t.scale,
+                if t.flip { " flipped" } else { "" }
+            );
+            left_to_cpu("a display transfer", t.input, len, details, &self.surfaces);
+        }
+        Ok(done)
+    }
+
+    fn display_transfer_on_gpu<M: GpuMemory>(&mut self, memory: &mut M, transfer: &Transfer) -> Result<bool, String> {
         let _timed = timed(0);
         self.pictures += 1;
         let t = transfer;
