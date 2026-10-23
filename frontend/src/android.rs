@@ -118,6 +118,11 @@ fn set_up(files: &Path, data: &Path) {
     // the temporary directory, where profiles and screenshots go, is the
     // data directory: an app may not write the system's
     std::env::set_var("TMPDIR", data);
+    // the cache, where the renderer keeps the shaders the GPU's driver
+    // compiled for the next run. an app has no HOME, without this every run
+    // compiled every shader again, the driver's compiler busy for minutes
+    // and new effects late to show up
+    std::env::set_var("XDG_CACHE_HOME", files.join("cache"));
     // data/env.txt, NAME=value a line, sets the switches a shell would, for
     // trying one without a new build: ZAKURO_HOST_PROFILE=1800,600 and the like
     if let Ok(text) = std::fs::read_to_string(data.join("env.txt")) {
