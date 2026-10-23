@@ -755,8 +755,8 @@ impl Gpu {
             }
         }
         // four bytes a pixel covers every format either side uses
-        self.sync_memory(memory, input_base, input_width * input_height * 4);
-        self.sync_memory(memory, output_base, output_width * output_height * 4);
+        self.sync_memory_for(memory, input_base, input_width * input_height * 4, "sync for a CPU transfer from");
+        self.sync_memory_for(memory, output_base, output_width * output_height * 4, "sync for a CPU transfer into");
         if copy_width == 0 || copy_height == 0 {
             return;
         }
@@ -843,10 +843,10 @@ impl Gpu {
         // every line and the gaps between them
         let span = |width: u32, skip: u32| if width == 0 { size } else { size + size.div_ceil(width) * skip };
         let (input, output) = (memory.translate(input_paddr), memory.translate(output_paddr));
-        self.sync_memory(memory, input, span(input_width, input_skip));
+        self.sync_memory_for(memory, input, span(input_width, input_skip), "sync for a copy from");
         let output_width = (output_gap & 0xFFFF) * 16;
         let output_skip = (output_gap >> 16) * 16;
-        self.sync_memory(memory, output, span(output_width, output_skip));
+        self.sync_memory_for(memory, output, span(output_width, output_skip), "sync for a copy into");
 
         log::debug!(
             "texture copy: 0x{input_paddr:08X} -> 0x{output_paddr:08X} size 0x{size:X}"
@@ -975,6 +975,15 @@ impl Gpu {
     /// makes guest memory right over a range something other than a draw
     /// is about to read or write, the host GPU keeps what it draws until then.
     pub fn sync_memory<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) {
+        self.sync_memory_for(memory, addr, len, "sync");
+    }
+
+    /// sync_memory, saying what for, which the GL waits in the log name.
+    pub fn sync_memory_for<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32, why: &'static str) {
+        #[cfg(feature = "gles")]
+        raster::gles::sync_why(why);
+        #[cfg(not(feature = "gles"))]
+        let _ = why;
         #[cfg(feature = "gles")]
         if let Some(hardware) = self.resources.hardware.as_mut() {
             if let Err(error) = hardware.sync(memory, addr, len) {

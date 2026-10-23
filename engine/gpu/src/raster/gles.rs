@@ -480,6 +480,16 @@ fn pooled<T: Send + 'static>(worker: &Worker, gl: GlRef, (pool, coming): (&mut V
     Ok(pool.pop().expect("a name was made"))
 }
 
+thread_local! {
+    /// what the next sync is for, so that its wait says so in the log.
+    static SYNC_WHY: std::cell::Cell<&'static str> = const { std::cell::Cell::new("sync") };
+}
+
+/// names what the next sync on this thread is for.
+pub(crate) fn sync_why(why: &'static str) {
+    SYNC_WHY.with(|cell| cell.set(why));
+}
+
 fn wait_from(name: &'static str) {
     let mut waits = WAITS.lock().unwrap();
     match waits.iter_mut().find(|(n, _)| *n == name) {
@@ -4131,6 +4141,7 @@ impl Gles {
 
     pub(crate) fn prepare_read<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) -> Result<(), String> {
         if self.surfaces.iter().any(|s| s.dirty_overlaps(addr, len)) {
+            sync_why("sync to read");
             self.sync(memory, addr, len)?;
         }
         Ok(())
@@ -4170,6 +4181,7 @@ impl Gles {
                 s.picture = None;
             }
         }
+        sync_why("sync before overwriting");
         self.sync(memory, addr, len)
     }
 
@@ -4224,7 +4236,7 @@ impl Gles {
         }
         if !self.worker.here() {
             let worker = self.worker.clone();
-            wait_from("sync");
+            wait_from(SYNC_WHY.with(|cell| cell.replace("sync")));
             return worker.run(|| self.sync(memory, addr, len));
         }
         let overlapping: Vec<usize> = (0..self.surfaces.len()).filter(|&i| self.surfaces[i].overlaps(addr, len)).collect();
