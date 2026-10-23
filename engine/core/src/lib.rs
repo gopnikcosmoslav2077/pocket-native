@@ -11,7 +11,7 @@ pub mod recompiled;
 pub mod services;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use zakuro_common::memory_map::*;
@@ -738,9 +738,13 @@ impl System {
     /// GPU's state can be looked at, and raises what it finished.
     pub fn wait_gpu(&mut self) {
         let Some(queue) = &self.gpu_queue else { return };
-        let mut tries = 0;
-        while queue.pending.load(Ordering::Acquire) > 0 {
-            pause(&mut tries);
+        if queue.pending.load(Ordering::Acquire) > 0 {
+            let start = std::time::Instant::now();
+            let mut tries = 0;
+            while queue.pending.load(Ordering::Acquire) > 0 {
+                pause(&mut tries);
+            }
+            GPU_WAITED.fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
         self.gpu_interrupts();
     }
@@ -779,6 +783,10 @@ impl System {
 
     pub fn set_skip_bottom(&mut self, skip: bool) {
         self.gpu_work(&[], move |gpu, _, _| gpu.skip_bottom = skip);
+    }
+
+    pub fn set_bottom_relearn(&mut self, relearn: bool) {
+        self.gpu_work(&[], move |gpu, _, _| gpu.bottom_relearn = relearn);
     }
 
     pub fn set_skip_right_eye(&mut self, skip: bool) {
@@ -1244,6 +1252,9 @@ fn pause(tries: &mut u32) {
 }
 
 type GpuJob = Box<dyn FnOnce() + Send>;
+
+/// microseconds the CPU's thread spent waiting on the GPU thread.
+pub static GPU_WAITED: AtomicU64 = AtomicU64::new(0);
 
 /// the GPU thread's queue, what it has not finished and the interrupts of
 /// what it did.

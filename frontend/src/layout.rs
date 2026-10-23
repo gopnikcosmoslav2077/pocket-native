@@ -58,6 +58,14 @@ pub fn areas(layout: Layout, swapped: bool, (width, height): (u32, u32)) -> [Opt
             let left = (width - a - c) / 2;
             [Some([left, (height - b) / 2, a, b]), Some([left + a, (height - d) / 2, c, d])]
         }
+        // the first screen big, the second half its size beside it, level
+        // with its top
+        Layout::BigBeside => {
+            let scale = fit(first[0] + second[0] / 2.0, first[1]);
+            let ([a, b], [c, d]) = (size(first, scale), size(second, scale / 2.0));
+            let (left, top) = ((width - a - c) / 2, (height - b) / 2);
+            [Some([left, top, a, b]), Some([left + a, top, c, d])]
+        }
     };
     if swapped { [second, first] } else { [first, second] }
 }
@@ -79,6 +87,7 @@ mod tests {
             (Layout::SideBySide, true, [Some([284, 133, 356, 213]), Some([0, 133, 284, 213])]),
             (Layout::Original, false, [Some([120, 0, 400, 240]), Some([160, 240, 320, 240])]),
             (Layout::Original, true, [Some([120, 240, 400, 240]), Some([160, 0, 320, 240])]),
+            (Layout::BigBeside, false, [Some([0, 103, 457, 274]), Some([457, 103, 183, 137])]),
         ];
         for (layout, swapped, expected) in cases {
             assert_eq!(areas(layout, swapped, r36s), expected, "{layout:?} swapped {swapped}");

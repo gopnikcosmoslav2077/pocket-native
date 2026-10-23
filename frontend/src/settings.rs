@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use zakuro_core::services::cfg::{LANGUAGE_ENGLISH, REGION_USA};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Layout {
@@ -13,6 +14,7 @@ pub enum Layout {
     TopOnly,
     SideBySide,
     Original,
+    BigBeside,
 }
 
 /// the screens stretched over the display they are on rather than kept in
@@ -61,6 +63,21 @@ pub enum Stick {
     Dpad,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Dpad {
+    Dpad,
+    CirclePad,
+    Touch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rotation {
+    Auto,
+    Clockwise,
+    CounterClockwise,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -77,11 +94,17 @@ pub struct Settings {
     pub show_fps: bool,
     /// the battery and the time under the screens.
     pub show_clock: bool,
+    /// the picture turned onto a sideways panel, as ZAKURO_PANEL_ROTATE
+    /// does, which Auto leaves to.
+    pub rotation: Rotation,
     pub frame_cap: u32,
     pub power: Power,
     pub touch_speed: Speed,
     pub buttons: Buttons,
     pub left_stick: Stick,
+    /// the d-pad as the circle pad or the touch cursor, for handhelds short
+    /// of sticks.
+    pub dpad: Dpad,
     /// tilting with L2 and the right stick the other way, left and right
     /// or up and down.
     pub reverse_tilt_x: bool,
@@ -98,11 +121,13 @@ impl Default for Settings {
             interpolate_to: 0,
             show_fps: false,
             show_clock: true,
+            rotation: Rotation::Auto,
             frame_cap: 30,
             power: Power::Performance,
             touch_speed: Speed::Normal,
             buttons: Buttons::Nintendo,
             left_stick: Stick::CirclePad,
+            dpad: Dpad::Dpad,
             reverse_tilt_x: false,
             reverse_tilt_y: false,
         }
@@ -111,11 +136,21 @@ impl Default for Settings {
 
 /// a game's options by name, on or off, and its advanced settings when the
 /// player changed them.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameSettings {
+    /// the console's language and region the game is told, as cfg numbers
+    /// them.
+    pub language: u8,
+    pub region: u8,
     pub options: BTreeMap<String, bool>,
     pub advanced: Option<Advanced>,
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        GameSettings { language: LANGUAGE_ENGLISH, region: REGION_USA, options: BTreeMap::new(), advanced: None }
+    }
 }
 
 /// the engine's speed hacks, each of which a game may not get along with. all

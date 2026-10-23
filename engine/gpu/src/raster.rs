@@ -18,6 +18,15 @@ use crate::texture::TextureFormat;
 use crate::shader::{self, ShaderUnit, Vec4};
 use crate::{format::ColorFormat, GpuMemory};
 
+/// values' little-endian bytes in one go.
+pub(crate) fn le_bytes<const N: usize, T: Copy>(values: &[T], bytes: impl Fn(T) -> [u8; N]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * N);
+    for &value in values {
+        out.extend_from_slice(&bytes(value));
+    }
+    out
+}
+
 /// reads a float24-encoded viewport register.
 pub(crate) fn read_float24(registers: &[u32], index: usize) -> f32 {
     crate::shader::isa::decode_float24(registers[index])
@@ -469,17 +478,21 @@ fn fetch_arrays<M: GpuMemory>(
                     None => {
                         let start = memory.translate(base + loader.offset + first * loader.stride);
                         let len = ((last - first) * loader.stride + loader.size) as usize;
-                        let bytes = match meshes.arrays.get_mut(&(start, len)) {
-                            Some((checked, bytes)) if crate::fast_with(crate::speedup::MESHES) && list - *checked < MESH_TRUSTED_LISTS => bytes.clone(),
+                        let fast = crate::fast_with(crate::speedup::MESHES);
+                        let bytes = match meshes.arrays.get(&(start, len)).map(|(checked, bytes)| (*checked, bytes.clone())) {
+                            Some((checked, bytes)) if fast && meshes.trusted(start, checked, list) => bytes,
                             // the same bytes keep the same array, which the GPU
                             // keeps a copy of
-                            Some((checked, bytes)) if crate::fast_with(crate::speedup::MESHES) && memory.slice(start, len)? == &bytes[..] => {
-                                *checked = list;
-                                bytes.clone()
+                            Some((_, bytes)) if fast && memory.slice(start, len)? == &bytes[..] => {
+                                meshes.arrays.insert((start, len), (list, bytes.clone()));
+                                bytes
                             }
-                            _ => {
+                            found => {
                                 let bytes: Arc<[u8]> = Arc::from(memory.slice(start, len)?);
-                                if crate::fast_with(crate::speedup::MESHES) {
+                                if fast {
+                                    if found.is_some() {
+                                        meshes.found_changed(start, list);
+                                    }
                                     meshes.make_room(len);
                                     meshes.arrays.insert((start, len), (list, bytes.clone()));
                                 }
@@ -739,14 +752,29 @@ struct MeshCache {
     indices: rustc_hash::FxHashMap<(u32, u32, bool), (u64, Arc<[u32]>, (u32, u32), Arc<[u32]>, Arc<[u8]>)>,
     arrays: rustc_hash::FxHashMap<(u32, usize), (u64, Arc<[u8]>)>,
     bytes: usize,
+    /// meshes found changed, by address, and the list they were found in.
+    changed: rustc_hash::FxHashMap<u32, u64>,
 }
 
 /// how many command lists a mesh is trusted for.
 const MESH_TRUSTED_LISTS: u64 = 64;
 /// how many bytes of meshes are kept before the cache starts over.
 const MESH_BYTES: usize = 32 << 20;
+/// how many command lists a changed mesh stays untrusted.
+const MESH_DOUBTED_LISTS: u64 = 1024;
 
 impl MeshCache {
+    fn trusted(&self, addr: u32, checked: u64, list: u64) -> bool {
+        list - checked < MESH_TRUSTED_LISTS && self.changed.get(&addr).is_none_or(|&at| list - at >= MESH_DOUBTED_LISTS)
+    }
+
+    fn found_changed(&mut self, addr: u32, list: u64) {
+        if self.changed.len() >= 1 << 16 {
+            self.changed.clear();
+        }
+        self.changed.insert(addr, list);
+    }
+
     fn make_room(&mut self, more: usize) {
         if self.bytes + more > MESH_BYTES {
             self.indices.clear();
@@ -1837,10 +1865,12 @@ pub fn draw<M: GpuMemory>(
     // each of them once.
     let list = resources.textures.list;
     let key = (index_base, vertex_count, index_short);
-    let cached = match resources.meshes.indices.get_mut(&key) {
+    let meshes = &mut resources.meshes;
+    let doubted = meshes.indices.get(&key).is_some_and(|entry| !meshes.trusted(index_base, entry.0, list));
+    let cached = match meshes.indices.get_mut(&key) {
         Some((checked, indices, range, rebased, bytes)) if indexed && crate::fast_with(crate::speedup::MESHES) => {
             // trusted a while, then kept as long as the bytes stay the same
-            let trusted = list - *checked < MESH_TRUSTED_LISTS;
+            let trusted = !doubted;
             let same = trusted
                 || memory.slice(index_base, (vertex_count * if index_short { 2 } else { 1 }) as usize).is_some_and(|data| {
                     if index_short {
@@ -1852,7 +1882,11 @@ pub fn draw<M: GpuMemory>(
             if same && !trusted {
                 *checked = list;
             }
-            same.then(|| (indices.clone(), *range, Some((rebased.clone(), bytes.clone()))))
+            let found = same.then(|| (indices.clone(), *range, Some((rebased.clone(), bytes.clone()))));
+            if !same {
+                meshes.found_changed(index_base, list);
+            }
+            found
         }
         _ => None,
     };
@@ -1880,9 +1914,9 @@ pub fn draw<M: GpuMemory>(
             let rebased: Option<(Arc<[u32]>, Arc<[u8]>)> = (indexed && crate::fast_with(crate::speedup::MESHES)).then(|| {
                 let rebased: Arc<[u32]> = indices.iter().map(|&index| index - range.0).collect();
                 let bytes: Arc<[u8]> = if range.1 - range.0 <= 0xFFFF {
-                    rebased.iter().flat_map(|&index| (index as u16).to_le_bytes()).collect()
+                    le_bytes(&rebased, |index| (index as u16).to_le_bytes()).into()
                 } else {
-                    rebased.iter().flat_map(|index| index.to_le_bytes()).collect()
+                    le_bytes(&rebased, u32::to_le_bytes).into()
                 };
                 (rebased, bytes)
             });

@@ -88,10 +88,14 @@ fn write_config_block(system: &mut System, block_id: u32, out: u32, size: u32) {
         // country info, the last byte is the country code.
         0x000B_0000 | 0x000B_0001 => {
             if data.len() >= 4 {
-                data[3] = if system.config.region == REGION_USA {
-                    49 // united States
-                } else {
-                    110 // united Kingdom
+                data[3] = match system.config.region {
+                    REGION_JAPAN => 1,
+                    REGION_USA => 49, // united States
+                    3 => 65, // australia
+                    4 => 160, // china
+                    5 => 136, // korea
+                    6 => 128, // taiwan
+                    _ => 110, // united Kingdom
                 };
             }
         }

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use zakuro_core::services::hid::PadState;
 
-use crate::settings::{Buttons, Settings, Speed, Stick};
+use crate::settings::{Buttons, Dpad, Settings, Speed, Stick};
 
 pub const A: u16 = 305;
 pub const B: u16 = 304;
@@ -77,10 +77,13 @@ pub fn shared() -> Option<Arc<Mutex<Pad>>> {
 /// the handheld's gamepad device and its name.
 pub fn gamepad() -> Option<(String, String)> {
     let devices = std::fs::read_to_string("/proc/bus/input/devices").ok()?;
-    devices.split("\n\n").find_map(|block| {
+    // muOS hides the pad it reads behind its own, so that one goes first
+    let mut blocks: Vec<&str> = devices.split("\n\n").collect();
+    blocks.sort_by_key(|block| !block.contains("N: Name=\"muOS-Keys\""));
+    blocks.into_iter().find_map(|block| {
         // the name comes in quotes
         let name = block.lines().find_map(|line| line.strip_prefix("N: Name="))?.trim_matches('"');
-        if !name.contains("Gamepad") && !name.contains("Controller") && !name.contains("Joypad") && !name.contains("joypad") && !h700_pad(name) && !rk3562_pad(name) {
+        if !name.contains("Gamepad") && !name.contains("Controller") && !name.contains("Joypad") && !name.contains("joypad") && !h700_pad(name) && !rk3562_pad(name) && name != "muOS-Keys" {
             return None;
         }
         let handlers = block.lines().find_map(|line| line.strip_prefix("H: Handlers="))?;
@@ -111,6 +114,9 @@ pub fn read_pad(path: String, name: String, pad: Arc<Mutex<Pad>>) {
     // the RK3562 handhelds give them the usual numbers too, with the
     // sticks on the usual axes
     let rk3562 = rk3562_pad(&name);
+    // muOS's own pad on the H700 handhelds, the usual gamepad numbers with
+    // the d-pad as a hat
+    let muos = name == "muOS-Keys";
     log::info!(
         "buttons from {name}{}",
         if h700 {
@@ -119,6 +125,8 @@ pub fn read_pad(path: String, name: String, pad: Arc<Mutex<Pad>>) {
             ", numbered as on Anbernic's RK3566 handhelds"
         } else if rk3562 {
             ", numbered as on the RK3562 handhelds"
+        } else if muos {
+            ", numbered as on muOS"
         } else {
             ""
         }
@@ -128,7 +136,7 @@ pub fn read_pad(path: String, name: String, pad: Arc<Mutex<Pad>>) {
         Some([None, None, Some(0), Some(1), Some(3), Some(4)])
     } else if rk3566 {
         Some([Some(0), Some(1), Some(3), None, None, Some(4)])
-    } else if rk3562 {
+    } else if rk3562 || muos {
         // left stick on ABS_X and ABS_Y, right on ABS_RX and ABS_RY, the
         // triggers on ABS_Z and ABS_RZ, which are buttons here
         Some([Some(0), Some(1), None, Some(3), Some(4), None])
@@ -155,6 +163,8 @@ pub fn read_pad(path: String, name: String, pad: Arc<Mutex<Pad>>) {
                         rk3566_button(code)
                     } else if rk3562 {
                         rk3562_button(code)
+                    } else if muos {
+                        muos_button(code)
                     } else {
                         code
                     };
@@ -164,7 +174,7 @@ pub fn read_pad(path: String, name: String, pad: Arc<Mutex<Pad>>) {
                         pad.keys.insert(code);
                     }
                 }
-                (3, _) if h700 && matches!(code, 16 | 17) => {
+                (3, _) if (h700 || muos) && matches!(code, 16 | 17) => {
                     let (less, more) = if code == 16 { (LEFT, RIGHT) } else { (UP, DOWN) };
                     pad.keys.remove(&less);
                     pad.keys.remove(&more);
@@ -236,6 +246,22 @@ fn rk3562_button(code: u16) -> u16 {
     }
 }
 
+/// a button of muOS's pad as the R36S numbers it: A and B the other way
+/// round, select, start, home and the sticks' buttons the usual gamepad
+/// codes. X, Y, the shoulders and the triggers already have the R36S's.
+fn muos_button(code: u16) -> u16 {
+    match code {
+        304 => A,
+        305 => B,
+        314 => SELECT,
+        315 => START,
+        316 => FN,
+        317 => L3,
+        318 => R3,
+        other => other,
+    }
+}
+
 /// an axis's least and most, as the device gives them.
 fn axis_range(device: &std::fs::File, axis: usize) -> Option<(i32, i32)> {
     let mut info = [0i32; 6];
@@ -291,11 +317,14 @@ pub fn controls(keys: &HashSet<u16>, axes: &[i32; 8], settings: &Settings) -> (P
             (Buttons::Xbox, Y) => X,
             _ => key,
         };
-        if keys.contains(&key) {
+        if keys.contains(&key) && (settings.dpad == Dpad::Dpad || ![UP, DOWN, LEFT, RIGHT].contains(&key)) {
             buttons |= button;
         }
     }
-    let (x, y) = (stick(axes[0]), -stick(axes[1]));
+    let (x, y) = match dpad(keys) {
+        (across, down) if settings.dpad == Dpad::CirclePad && (across, down) != (0.0, 0.0) => (across, -down),
+        _ => (stick(axes[0]), -stick(axes[1])),
+    };
     match settings.left_stick {
         Stick::CirclePad => (buttons, x, y),
         Stick::Dpad => {
@@ -307,6 +336,12 @@ pub fn controls(keys: &HashSet<u16>, axes: &[i32; 8], settings: &Settings) -> (P
             (buttons, 0.0, 0.0)
         }
     }
+}
+
+/// the d-pad held as a stick's position, across and down.
+pub fn dpad(keys: &HashSet<u16>) -> (f32, f32) {
+    let axis = |less: u16, more: u16| keys.contains(&more) as i32 as f32 - keys.contains(&less) as i32 as f32;
+    (axis(LEFT, RIGHT), axis(UP, DOWN))
 }
 
 /// how far the touch cursor goes a frame with the right stick held over.

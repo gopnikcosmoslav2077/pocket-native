@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::font::{rgba, Canvas};
 use crate::input::{A, B, DOWN, LEFT, RIGHT, UP};
 use crate::profile::Profile;
-use crate::settings::{Advanced, Buttons, GameSettings, Layout, Power, Settings, Speed, Stick, Stretch};
+use crate::settings::{Advanced, Buttons, Dpad, GameSettings, Layout, Power, Rotation, Settings, Speed, Stick, Stretch};
 
 const PANEL: [u8; 3] = [13, 20, 32];
 const EDGE: [u8; 3] = [40, 110, 210];
@@ -29,12 +29,14 @@ enum Field {
     Interpolate,
     ShowFps,
     ShowClock,
+    Rotation,
     FrameCap,
     Power,
     Option(usize),
     TouchSpeed,
     Buttons,
     LeftStick,
+    Dpad,
     ReverseTiltX,
     ReverseTiltY,
     Resume,
@@ -43,6 +45,8 @@ enum Field {
     Quit,
     Toggle(usize),
     FrameSkip,
+    Language,
+    Region,
     Restart,
     Compatible,
     Defaults,
@@ -63,7 +67,7 @@ const TOGGLES: [(&str, fn(&mut Advanced) -> &mut bool, [&str; 2], &str); 31] = [
     ("Depth tiles on the GPU", |a| &mut a.tile_copies, ON_OFF, "Moves depth between buffers on the GPU. Try Off if shadows, fog or outlines go wrong."),
     ("Clears on the GPU", |a| &mut a.gpu_clears, ON_OFF, "Clears whole buffers on the GPU alone. Try Off for leftover pictures or black screens."),
     ("Vertex arrays on the GPU", |a| &mut a.gpu_arrays, ON_OFF, "Keeps shapes in GPU memory. Try Off if shapes flicker or break apart."),
-    ("Trust cached meshes", |a| &mut a.trust_meshes, ON_OFF, "Reuses shapes for a few pictures without reading them again. Try Off if trees, grass or characters flicker or lag."),
+    ("Trust cached meshes", |a| &mut a.trust_meshes, ON_OFF, "Reuses shapes for a few pictures without reading them again. Try Off if things flicker, lag or menus glitch."),
     ("Trust cached textures", |a| &mut a.trust_textures, ON_OFF, "Reuses textures for a few pictures without reading them again. Try Off if a texture is late to change."),
     ("Small texture cache", |a| &mut a.small_cache, ON_OFF, "Keeps a quarter of the textures, to save memory. Try Off if busy scenes stutter."),
     ("Hide scenery out of view", |a| &mut a.cull, ON_OFF, "Skips big shapes that were not on screen a moment ago. Try Off if things pop in or flicker at the edges."),
@@ -113,15 +117,19 @@ pub enum Action {
 }
 
 /// the layouts the menu goes through, with the screens swapped or not.
-const LAYOUTS: [(Layout, bool, &str); 6] = [
+const LAYOUTS: [(Layout, bool, &str); 7] = [
     (Layout::BigTop, false, "Big top"),
     (Layout::BigTop, true, "Swapped"),
     (Layout::TopOnly, false, "Top only"),
     (Layout::TopOnly, true, "Bottom only"),
     (Layout::SideBySide, false, "Side by side"),
+    (Layout::BigBeside, false, "Big top, small beside"),
     (Layout::Original, false, "Original size"),
 ];
 const CAPS: [u32; 3] = [20, 30, 60];
+/// the languages and regions in cfg's order.
+const LANGUAGES: [&str; 12] = ["Japanese", "English", "French", "German", "Italian", "Spanish", "Chinese (simplified)", "Korean", "Dutch", "Portuguese", "Russian", "Chinese (traditional)"];
+const REGIONS: [&str; 7] = ["Japan", "USA", "Europe", "Australia", "China", "Korea", "Taiwan"];
 
 #[derive(Default)]
 pub struct Menu {
@@ -138,10 +146,10 @@ fn sections(page: Page, profile: &Profile) -> Vec<(&'static str, Vec<Field>)> {
     let toggles = |range: std::ops::RangeInclusive<usize>| range.map(Field::Toggle).collect();
     match page {
         Page::Main => vec![
-            ("Display", vec![Field::Layout, Field::Smooth, Field::Stretch, Field::Interpolate, Field::ShowFps, Field::ShowClock]),
+            ("Display", vec![Field::Layout, Field::Smooth, Field::Stretch, Field::Interpolate, Field::ShowFps, Field::ShowClock, Field::Rotation]),
             ("Performance", vec![Field::FrameCap, Field::Power]),
             ("This game", (0..profile.options.len()).map(Field::Option).collect()),
-            ("Controls", vec![Field::TouchSpeed, Field::Buttons, Field::LeftStick, Field::ReverseTiltX, Field::ReverseTiltY]),
+            ("Controls", vec![Field::TouchSpeed, Field::Buttons, Field::LeftStick, Field::Dpad, Field::ReverseTiltX, Field::ReverseTiltY]),
             ("Game", vec![Field::Resume, Field::Advanced, Field::Reset, Field::Quit]),
         ],
         Page::Advanced => vec![
@@ -150,6 +158,7 @@ fn sections(page: Page, profile: &Profile) -> Vec<(&'static str, Vec<Field>)> {
             ("Graphics - requires restart", toggles(12..=22)),
             ("CPU - requires restart", toggles(23..=24)),
             ("Loading - requires restart", toggles(25..=27)),
+            ("System - requires restart", vec![Field::Language, Field::Region]),
             ("", vec![Field::Restart, Field::Compatible, Field::Defaults, Field::Back]),
         ],
     }
@@ -184,6 +193,15 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
         Field::Interpolate => ("Frame interpolation", if settings.interpolate_to == 0 { "Off".into() } else { format!("Up to {} fps", settings.interpolate_to) }),
         Field::ShowFps => ("Show fps", if settings.show_fps { "On" } else { "Off" }.into()),
         Field::ShowClock => ("Clock and battery", if settings.show_clock { "On" } else { "Off" }.into()),
+        Field::Rotation => {
+            let rotation = match settings.rotation {
+                Rotation::Auto => "Auto",
+                Rotation::Clockwise => "Clockwise",
+                Rotation::CounterClockwise => "Counter clockwise",
+                Rotation::Off => "Off",
+            };
+            ("Rotation", rotation.into())
+        }
         Field::FrameCap => ("Frame cap", format!("{} fps", settings.frame_cap)),
         Field::Power => ("Power", format!("{:?}", settings.power)),
         Field::Option(index) => {
@@ -194,6 +212,14 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
         Field::TouchSpeed => ("Touch cursor speed", format!("{:?}", settings.touch_speed)),
         Field::Buttons => ("A/B layout", format!("{:?}", settings.buttons)),
         Field::LeftStick => ("Left stick", if settings.left_stick == Stick::CirclePad { "Circle pad" } else { "D-pad" }.into()),
+        Field::Dpad => {
+            let dpad = match settings.dpad {
+                Dpad::Dpad => "D-pad",
+                Dpad::CirclePad => "Circle pad",
+                Dpad::Touch => "Touch cursor",
+            };
+            ("D-pad", dpad.into())
+        }
         Field::ReverseTiltX => ("Reverse tilt X", if settings.reverse_tilt_x { "On" } else { "Off" }.into()),
         Field::ReverseTiltY => ("Reverse tilt Y", if settings.reverse_tilt_y { "On" } else { "Off" }.into()),
         Field::Resume => ("Resume", String::new()),
@@ -209,6 +235,8 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
             let skip = Advanced::of(game, profile).frame_skip;
             ("Frame skip", if skip == 0 { "Off".into() } else { format!("Up to {skip}") })
         }
+        Field::Language => ("Language", LANGUAGES.get(game.language as usize).copied().unwrap_or("?").into()),
+        Field::Region => ("Region", REGIONS.get(game.region as usize).copied().unwrap_or("?").into()),
         Field::Restart => ("Restart game", String::new()),
         Field::Compatible => ("Most compatible", String::new()),
         Field::Defaults => ("Reset to defaults", String::new()),
@@ -233,6 +261,7 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
         Field::Interpolate => settings.interpolate_to = step(&[0, 30, 60], settings.interpolate_to, by),
         Field::ShowFps => settings.show_fps = !settings.show_fps,
         Field::ShowClock => settings.show_clock = !settings.show_clock,
+        Field::Rotation => settings.rotation = step(&[Rotation::Auto, Rotation::Clockwise, Rotation::CounterClockwise, Rotation::Off], settings.rotation, by),
         Field::FrameCap => settings.frame_cap = step(&CAPS, settings.frame_cap, by),
         Field::Power => settings.power = step(&[Power::Saver, Power::Balanced, Power::Performance], settings.power, by),
         Field::Option(index) => {
@@ -243,6 +272,7 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
         Field::TouchSpeed => settings.touch_speed = step(&[Speed::Slow, Speed::Normal, Speed::Fast], settings.touch_speed, by),
         Field::Buttons => settings.buttons = step(&[Buttons::Nintendo, Buttons::Xbox], settings.buttons, by),
         Field::LeftStick => settings.left_stick = step(&[Stick::CirclePad, Stick::Dpad], settings.left_stick, by),
+        Field::Dpad => settings.dpad = step(&[Dpad::Dpad, Dpad::CirclePad, Dpad::Touch], settings.dpad, by),
         Field::ReverseTiltX => settings.reverse_tilt_x = !settings.reverse_tilt_x,
         Field::ReverseTiltY => settings.reverse_tilt_y = !settings.reverse_tilt_y,
         Field::Toggle(index) => {
@@ -256,6 +286,8 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
             advanced.frame_skip = step(&[0, 1, 2, 3], advanced.frame_skip, by);
             game.advanced = Some(advanced);
         }
+        Field::Language => game.language = (game.language as isize + by).rem_euclid(LANGUAGES.len() as isize) as u8,
+        Field::Region => game.region = (game.region as isize + by).rem_euclid(REGIONS.len() as isize) as u8,
         Field::Compatible => game.advanced = Some(Advanced::compatible(Advanced::of(game, profile))),
         Field::Defaults => game.advanced = None,
         Field::Resume | Field::Advanced | Field::Reset | Field::Quit | Field::Restart | Field::Back => {}
@@ -265,18 +297,20 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
 /// what the help under the list says about a field.
 fn help(field: Field, profile: &Profile) -> &str {
     match field {
-        Field::Layout => "Where the screens go. A tap of L2 swaps them, FN and R1 switch to one big screen.",
+        Field::Layout => "Where the screens go. A tap of L2 swaps them, FN or L3 with R1 switch to one big screen.",
         Field::Smooth => "Smooths the picture as it is scaled up. Off is sharper, with uneven pixels.",
         Field::Stretch => "With a screen on each display, the screens stretched over theirs: no bars, but out of shape.",
         Field::Interpolate => "Fills in pictures halfway between a game's, up to 30 or 60 a second. 30 costs half as much GPU time.",
         Field::ShowFps => "Pictures a second and the temperature, in the bottom right corner.",
         Field::ShowClock => "The battery and a 12-hour clock, in the bottom left corner.",
+        Field::Rotation => "Turns the picture for a screen that shows it the wrong way round. Takes effect when the game starts again.",
         Field::FrameCap => "The most pictures shown a second. Lower lasts longer and runs cooler.",
         Field::Power => "How fast the CPU and GPU run. Performance is fastest and warmest, Saver lasts longest.",
         Field::Option(index) => &profile.options[index].help,
         Field::TouchSpeed => "How fast the right stick moves the touch cursor. R2 or R3 touches.",
         Field::Buttons => "Which face buttons are A and B: where Nintendo puts them, or where Xbox does.",
         Field::LeftStick => "The left stick as the circle pad, or as the d-pad.",
+        Field::Dpad => "The d-pad as itself, the circle pad or the touch cursor. FN or L3 with Select switches it in game.",
         Field::ReverseTiltX => "Holding L2, the right stick tilts the console. On tilts it the other way left and right.",
         Field::ReverseTiltY => "Holding L2, the right stick tilts the console. On tilts it the other way up and down.",
         Field::Resume => "Back to the game. B or FN does the same.",
@@ -285,6 +319,8 @@ fn help(field: Field, profile: &Profile) -> &str {
         Field::Quit => "Back to EmulationStation.",
         Field::Toggle(index) => TOGGLES[index].3,
         Field::FrameSkip => "The most pictures left out in a row while the game is behind. Off is smoother and slower.",
+        Field::Language => "The console language the game is told. Games without it pick one of their own.",
+        Field::Region => "The console region the game is told. A game from another region may want its own.",
         Field::Restart => "Starts the game again, for the settings that require a restart.",
         Field::Compatible => "Turns off every speed hack a game could trip over, then restart. If that helps, turn them back on one at a time.",
         Field::Defaults => "Back to what this game starts with.",
@@ -493,11 +529,13 @@ pub struct Status {
     fps: Option<String>,
     battery: Option<i64>,
     clock: Option<String>,
+    /// what a hotkey just did, at the top.
+    pub note: Option<&'static str>,
 }
 
 impl Status {
     /// none when the settings show nothing.
-    pub fn now(settings: &Settings, fps: u32) -> Option<Status> {
+    pub fn now(settings: &Settings, fps: u32, note: Option<&'static str>) -> Option<Status> {
         let read = |path: &str| std::fs::read_to_string(path).ok().and_then(|text| text.trim().parse::<i64>().ok());
         let status = Status {
             fps: settings.show_fps.then(|| match read("/sys/class/thermal/thermal_zone0/temp") {
@@ -506,14 +544,20 @@ impl Status {
             }),
             battery: settings.show_clock.then(|| read("/sys/class/power_supply/battery/capacity")).flatten(),
             clock: settings.show_clock.then(clock),
+            note,
         };
-        (status.fps.is_some() || status.clock.is_some()).then_some(status)
+        (status.fps.is_some() || status.clock.is_some() || note.is_some()).then_some(status)
     }
 
     pub fn draw(&self, canvas: &mut Canvas, (width, height): (u32, u32)) {
         let (width, height) = (width as f32, height as f32);
         let (top, bottom) = (height - 32.0, height - 8.0);
         let backing = rgba([0, 0, 0], 160);
+        if let Some(note) = self.note {
+            let half = canvas.measure(BIG, note) / 2.0 + 6.0;
+            canvas.fill([width / 2.0 - half, 8.0, width / 2.0 + half, 32.0], backing);
+            canvas.text(BIG, note, width / 2.0 - half + 6.0, 11.0, rgba(TEXT, 255), false);
+        }
         if let Some(line) = &self.fps {
             canvas.fill([width - 20.0 - canvas.measure(BIG, line), top, width - 8.0, bottom], backing);
             canvas.text(BIG, line, width - 14.0, top + 3.0, rgba(TEXT, 255), true);

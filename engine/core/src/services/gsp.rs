@@ -190,7 +190,7 @@ pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bo
             true
         }
         SET_LCD_FORCE_BLACK => {
-            system.lcd_force_black = buffer.get(&mut system.memory, 1) != 0;
+            system.lcd_force_black = buffer.get(&mut system.memory, 1) & 0xFF != 0;
             buffer.reply(&mut system.memory, id, &[]);
             true
         }

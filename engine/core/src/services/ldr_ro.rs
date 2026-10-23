@@ -56,7 +56,7 @@ pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bo
             let data_segment_size = buffer.get(&mut system.memory, 6);
             let bss_segment = buffer.get(&mut system.memory, 7);
             let bss_segment_size = buffer.get(&mut system.memory, 8);
-            let auto_link = buffer.get(&mut system.memory, 9) != 0;
+            let auto_link = buffer.get(&mut system.memory, 9) & 0xFF != 0;
             let fix_level = buffer.get(&mut system.memory, 10);
 
             log::debug!(

@@ -144,44 +144,37 @@ pub fn relocate(memory: &mut crate::memory::Memory, block: u32, paddr: u32) {
 
     let header_size = memory.read16(header + 6) as u32;
     let sections = memory.read32(header + 16);
-
-    let mut finf = None;
-    let mut tglp = None;
-    let mut cwdh = None;
-    let mut cmap = None;
-
+    let mut found = Vec::new();
     let mut at = header + header_size;
-    for _ in 0..sections.min(16) {
+    for _ in 0..sections.min(4096) {
         let mut magic = [0u8; 4];
         memory.read_bytes(at, &mut magic);
         let size = memory.read32(at + 4);
-        match &magic {
-            b"FINF" => finf = finf.or(Some(at)),
-            b"TGLP" => tglp = tglp.or(Some(at)),
-            b"CWDH" => cwdh = cwdh.or(Some(at)),
-            b"CMAP" => cmap = cmap.or(Some(at)),
-            _ => break,
-        }
-        if size == 0 {
+        if !matches!(&magic, b"FINF" | b"TGLP" | b"CWDH" | b"CMAP") || size == 0 {
             break;
         }
+        found.push((magic, at));
         at += size;
     }
 
-    let Some(finf) = finf else { return };
+    let Some(&(_, finf)) = found.iter().find(|(magic, _)| magic == b"FINF") else { return };
+    let Some(&(_, tglp)) = found.iter().find(|(magic, _)| magic == b"TGLP") else { return };
+    let shift = (tglp + SECTION_BODY).wrapping_sub(memory.read32(finf + 16));
     // the block is mapped read-only, so the edits go to the physical pages
     // behind it rather than through the guest's view of them.
-    let mut put = |at: u32, value: u32| {
-        memory.write_physical(paddr + (at - block), &value.to_le_bytes());
-    };
-    for (field, section) in [(16, tglp), (20, cwdh), (24, cmap)] {
-        if let Some(section) = section {
-            put(finf + field, section + SECTION_BODY);
+    let mut moved = |at: u32| {
+        let pointer = memory.read32(at);
+        if pointer != 0 {
+            memory.write_physical(paddr + (at - block), &pointer.wrapping_add(shift).to_le_bytes());
         }
-    }
-    if let Some(tglp) = tglp {
-        // the sheet follows its section header directly.
-        put(tglp + 28, tglp + 0x20);
+    };
+    for &(magic, section) in &found {
+        match &magic {
+            b"FINF" => [16, 20, 24].into_iter().for_each(|field| moved(section + field)),
+            b"TGLP" => moved(section + 28),
+            b"CWDH" => moved(section + 12),
+            _ => moved(section + 16),
+        }
     }
 
     log::debug!("relocated the shared font's sections for its mapping at 0x{block:08X}");
@@ -287,6 +280,29 @@ mod tests {
                 std::str::from_utf8(magic).unwrap()
             );
         }
+    }
+
+    /// the sheet moves with the rest, wherever it sits.
+    #[test]
+    fn relocating_moves_every_pointer_alike() {
+        use zakuro_cpu::Bus;
+        let (old, new) = (0x1800_0000u32, 0x1A00_0000u32);
+        let mut font = build(old);
+        let finf = FONT_OFFSET + 0x14;
+        let tglp = read32(&font, finf + 16) - old - SECTION_BODY;
+        font[(tglp + 28) as usize..(tglp + 32) as usize].copy_from_slice(&(old + 0x2000).to_le_bytes());
+
+        let mut system = crate::System::new(crate::Config::default());
+        let size = zakuro_common::bits::align_up(font.len() as u32, 0x1000);
+        let block = system.memory.phys.allocate(crate::memory::MemoryRegion::Base, size).unwrap();
+        system.memory.map(new, block.addr, size, crate::memory::Permission::READ, crate::memory::MemoryState::Shared);
+        system.memory.write_physical(block.addr, &font);
+        relocate(&mut system.memory, new, block.addr);
+
+        for field in [16, 20, 24] {
+            assert_eq!(system.memory.read32(new + finf + field), read32(&font, finf + field) - old + new);
+        }
+        assert_eq!(system.memory.read32(new + tglp + 28), new + 0x2000);
     }
 
     /// the sheet has to be entirely inside the block, or a title reading a

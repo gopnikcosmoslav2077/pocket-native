@@ -5,16 +5,18 @@
 //! ZAKURO_KMS=1 ZAKURO_RECOMPILED=title.so ZAKURO_DATA=dir pocket-native <rom>
 //!
 //! A tap of FN, or L3 and R2 together, opens the menu, FN+Start quits, a tap
-//! of L2 or FN+L1 swaps the screens, FN+R1 shows both or one big, the right
-//! stick moves the touch cursor and R2 touches, or tilts the console with L2
-//! held. Reset in the menu exits with 3, for the launcher to start the game
-//! again.
+//! of L2 or FN+L1 swaps the screens, FN+R1 shows both or one big, FN+Select
+//! turns the d-pad into the circle pad or the touch cursor, L3 doing for FN
+//! in these, the right stick moves the touch cursor and R2 touches, or tilts
+//! the console with L2 held. Reset in the menu exits with 3, for the
+//! launcher to start the game again.
 //!
 //! pocket-native --probe <rom> [frames] tries a game as fast as it runs and
 //! writes a report of how it went, see probe.rs.
 
 #[cfg(target_os = "android")]
 mod android;
+mod busy;
 mod font;
 mod input;
 mod layout;
@@ -36,10 +38,10 @@ use zakuro_core::{loader, Config, FrameOutcome, System};
 use zakuro_gpu::Overlay;
 
 use crate::font::{Canvas, Font};
-use crate::input::{Pad, FN, L1, L2, L3, R1, R2, R3, START};
+use crate::input::{Pad, FN, L1, L2, L3, R1, R2, R3, SELECT, START};
 use crate::menu::{Action, Menu, Status};
 use crate::profile::Profile;
-use crate::settings::{Advanced, GameSettings, Layout, Power, Settings};
+use crate::settings::{Advanced, Dpad, GameSettings, Layout, Power, Rotation, Settings};
 
 /// the exit code that asks the launcher to start the game again.
 const RESET: i32 = 3;
@@ -62,6 +64,7 @@ fn apply_options(system: &mut System, game: &GameSettings, profile: &Profile, ba
     system.set_bottom_full_rate(full_rate);
     let advanced = Advanced::of(game, profile);
     system.set_skip_bottom(advanced.skip_bottom);
+    system.set_bottom_relearn(profile.bottom_relearn);
     system.set_skip_right_eye(advanced.skip_right_eye);
 }
 
@@ -115,11 +118,25 @@ pub fn run(mut args: Vec<String>) {
     let profile = profile::find(&profile::titles_dir(), title_id_of(&path)).unwrap_or_default();
     let advanced = Advanced::of(&game, &profile);
     advanced.export();
+    let settings_path = settings::config_dir().join("settings.toml");
+    let mut settings: Settings = settings::load(&settings_path);
+    // the menu's rotation over ZAKURO_PANEL_ROTATE, before the panel starts
+    let rotate = match settings.rotation {
+        Rotation::Auto => None,
+        Rotation::Clockwise => Some("90"),
+        Rotation::CounterClockwise => Some("270"),
+        Rotation::Off => Some("0"),
+    };
+    if let Some(rotate) = rotate {
+        std::env::set_var("ZAKURO_PANEL_ROTATE", rotate);
+    }
     let config = Config {
         recompiled: std::env::var("ZAKURO_RECOMPILED").ok().filter(|_| advanced.recompiled).map(Into::into),
         hardware_renderer: true,
         software_draws: !advanced.gpu_drawing,
         data_dir: Some(data.clone()),
+        language: game.language,
+        region: game.region,
         // ZAKURO_CLOCK=milliseconds since 1900 starts the clock there, as boot
         // takes it, so that a scripted run meets the same encounters
         clock: std::env::var("ZAKURO_CLOCK").ok().and_then(|v| v.parse().ok()),
@@ -136,8 +153,6 @@ pub fn run(mut args: Vec<String>) {
     let title_id = system.title.as_ref().map_or(0, |title| title.program_id());
     let title = if profile.name.is_empty() { format!("{title_id:016X}") } else { profile.name.clone() };
     log::info!("Pocket Native {}, {title}, {} options", env!("CARGO_PKG_VERSION"), profile.options.len());
-    let settings_path = settings::config_dir().join("settings.toml");
-    let mut settings: Settings = settings::load(&settings_path);
     let base_drops = std::env::var("ZAKURO_DROP_DRAWS").unwrap_or_default();
     apply_options(&mut system, &game, &profile, &base_drops);
     let mut probe = probing.then(|| probe::Probe::new(title_id, args.get(1).and_then(|frames| frames.parse().ok()).unwrap_or(3600)));
@@ -166,7 +181,9 @@ pub fn run(mut args: Vec<String>) {
     let mut menu = Menu::default();
     let mut overlay: Option<Arc<Overlay>> = None;
     let mut menu_drawn = false;
-    let (mut fps, mut status, mut fps_since) = (0u32, None, Instant::now());
+    let (mut fps, mut last_fps, mut status, mut fps_since) = (0u32, 0u32, None, Instant::now());
+    // what the screen says for a moment after a hotkey, and since when
+    let mut note: Option<(&str, Instant)> = None;
     let mut fn_alone = false;
     let mut exit_code = 0;
 
@@ -218,6 +235,7 @@ pub fn run(mut args: Vec<String>) {
     let mut frame_number = 0u64;
     let (mut counted_transfers, mut counted_top, mut counted_bottom, mut counted_shown) = (0u64, 0u64, 0u64, 0u64);
     let (mut counted, mut rendered, mut since) = (0u32, 0u32, Instant::now());
+    let mut busy = busy::Busy::start();
     let mut logs = 0u32;
     // ZAKURO_SLOW_FRAMES=ms logs every frame that took longer to run
     let slow: Option<f64> = std::env::var("ZAKURO_SLOW_FRAMES").ok().and_then(|ms| ms.parse().ok());
@@ -236,11 +254,12 @@ pub fn run(mut args: Vec<String>) {
         }
         tick += 1;
         let pressed = |key: u16| keys.contains(&key) && !held.contains(&key);
-        let [fn_pressed, start, l1, l2, r1] = [FN, START, L1, L2, R1].map(pressed);
+        let [fn_pressed, start, select, l1, l2, r1] = [FN, START, SELECT, L1, L2, R1].map(pressed);
         // FN pressed and let go on its own opens and closes the menu
         if fn_pressed {
             fn_alone = true;
-        } else if keys.contains(&FN) && keys.iter().any(|key| *key != FN && !held.contains(key)) {
+        }
+        if keys.contains(&FN) && keys.iter().any(|key| *key != FN && !held.contains(key)) {
             fn_alone = false;
         }
         let tapped = fn_alone && held.contains(&FN) && !keys.contains(&FN);
@@ -293,7 +312,8 @@ pub fn run(mut args: Vec<String>) {
             }
         }
 
-        let hotkey = keys.contains(&FN);
+        // L3 stands in for FN on handhelds with no FN
+        let hotkey = keys.contains(&FN) || keys.contains(&L3);
         if hotkey && start {
             break;
         }
@@ -315,6 +335,14 @@ pub fn run(mut args: Vec<String>) {
         if hotkey && r1 {
             settings.layout = if settings.layout == Layout::TopOnly { Layout::BigTop } else { Layout::TopOnly };
         }
+        if hotkey && select {
+            let (dpad, said) = match settings.dpad {
+                Dpad::Dpad => (Dpad::CirclePad, "D-pad: circle pad"),
+                Dpad::CirclePad => (Dpad::Touch, "D-pad: touch cursor"),
+                Dpad::Touch => (Dpad::Dpad, "D-pad: d-pad"),
+            };
+            (settings.dpad, note) = (dpad, Some((said, Instant::now())));
+        }
         held = keys.clone();
 
         let behind = match probe.as_mut() {
@@ -335,8 +363,9 @@ pub fn run(mut args: Vec<String>) {
         let (buttons, circle_x, circle_y) = if hotkey { (Default::default(), 0.0, 0.0) } else { input::controls(&keys, &axes, &settings) };
         let step = input::cursor_step(settings.touch_speed);
         if !keys.contains(&L2) {
-            cursor.0 = (cursor.0 + input::stick(axes[3]) * step).clamp(0.0, 319.0);
-            cursor.1 = (cursor.1 + input::stick(axes[4]) * step).clamp(0.0, 239.0);
+            let (across, down) = if settings.dpad == Dpad::Touch { input::dpad(&keys) } else { (0.0, 0.0) };
+            cursor.0 = (cursor.0 + (input::stick(axes[3]) + across).clamp(-1.0, 1.0) * step).clamp(0.0, 319.0);
+            cursor.1 = (cursor.1 + (input::stick(axes[4]) + down).clamp(-1.0, 1.0) * step).clamp(0.0, 239.0);
         }
         let mut touching = keys.contains(&R2) || keys.contains(&R3);
         // a finger on the bottom screen where it is shown touches there, and
@@ -411,13 +440,14 @@ pub fn run(mut args: Vec<String>) {
             let (transfers, top, bottom, shown) = (system.transfers(), system.top_pictures(), system.bottom_pictures(), system.shown());
             let (read_us, read_bytes) = zakuro_core::services::fs::rom_reads();
             log::info!(
-                "speed {speed:.0}%, rendered {rendered} of 300 frames, {} transfers, {} top pictures, {} bottom, rom {}ms/{}KiB, {} shown",
+                "speed {speed:.0}%, rendered {rendered} of 300 frames, {} transfers, {} top pictures, {} bottom, rom {}ms/{}KiB, {} shown, {}",
                 transfers - counted_transfers,
                 top - counted_top,
                 bottom - counted_bottom,
                 read_us / 1000,
                 read_bytes / 1024,
-                shown - counted_shown
+                shown - counted_shown,
+                busy.report()
             );
             (counted_transfers, counted_top, counted_bottom, counted_shown) = (transfers, top, bottom, shown);
             (counted, rendered, since) = (0, 0, Instant::now());
@@ -433,8 +463,13 @@ pub fn run(mut args: Vec<String>) {
         if !skip && frame_number >= presented + every {
             presented = frame_number;
             fps += 1;
-            if fps_since.elapsed() >= Duration::from_secs(1) {
-                let now = Status::now(&settings, fps);
+            let second = fps_since.elapsed() >= Duration::from_secs(1);
+            if second {
+                (last_fps, fps, fps_since) = (fps, 0, Instant::now());
+            }
+            let said = note.filter(|(_, at)| at.elapsed() < Duration::from_secs(2)).map(|(said, _)| said);
+            if second || said != status.as_ref().and_then(|status: &Status| status.note) {
+                let now = Status::now(&settings, last_fps, said);
                 if now != status {
                     overlay = now.as_ref().map(|now| {
                         let mut canvas = Canvas::new(&font, PANEL);
@@ -443,7 +478,6 @@ pub fn run(mut args: Vec<String>) {
                     });
                     status = now;
                 }
-                (fps, fps_since) = (0, Instant::now());
             }
             let areas = layout::shown(&settings);
             let pointer = areas[1].map(|[x, y, width, height]| (x + (cursor.0 * width as f32 / 320.0) as i32, y + (cursor.1 * height as f32 / 240.0) as i32));

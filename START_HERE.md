@@ -98,7 +98,7 @@ copied the folder: there should be one per game, sitting directly in
 does not start, the folder arrived in pieces: delete it from the card
 and copy the whole folder again.
 
-A tap of FN opens the menu in game and pauses it, FN + Start quits. On a handheld with no FN, press L3 and R2 together for the menu.
+A tap of FN opens the menu in game and pauses it, FN + Start quits. On a handheld with no FN, press L3 and R2 together for the menu, and use L3 in place of FN for the rest.
 Saves and the game's log go in
 `Pocket Native/pocket-native/games/<title id>/data`.
 

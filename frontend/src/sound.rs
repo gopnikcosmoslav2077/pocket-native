@@ -129,6 +129,11 @@ impl Alsa {
                 log::warn!("could not open the sound device, playing without sound");
                 return None;
             }
+            if let Ok(get) = alsa.get::<unsafe extern "C" fn(*mut u8, *mut u64, *mut u64) -> i32>(b"snd_pcm_get_params\0") {
+                let (mut buffer, mut period) = (0, 0);
+                get(pcm, &mut buffer, &mut period);
+                log::info!("sound at {} Hz, the device buffering {buffer} samples in periods of {period}", AUDIO_SAMPLE_RATE.round());
+            }
             Some(Alsa { _library: alsa, pcm, write, recover, delay })
         }
     }
@@ -136,6 +141,12 @@ impl Alsa {
 
 #[cfg(not(target_os = "android"))]
 impl Device for Alsa {
+    /// a bit more than a tenth of a second, which the RG52 Mini's device
+    /// needs to play without gaps, as upstream found.
+    fn target(&self) -> f64 {
+        0.15
+    }
+
     fn queued(&mut self) -> i64 {
         let mut queued = 0i64;
         // SAFETY: the device open made, and a number for ALSA to fill

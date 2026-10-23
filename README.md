@@ -4,7 +4,7 @@ If you have not used it before, [start here](START_HERE.md). The short
 version: there is no app to install and no game included, a PC rebuilds
 each game first (drop it on `Build a game`).
 
-Nintendo 3DS games, recompiled ahead of time, running natively on cheap
+Nintendo 3DS games, recompiled, running natively on cheap
 Linux handhelds. Made for the R36S and its Mali-G31 GPU under ArkOS.
 
 Pocket Native is a fork of [Zakuro](https://github.com/fearkov/zakuro) and
@@ -138,17 +138,22 @@ Saves, the game's own settings and its log go in
 | FN + Start | Quits |
 | Tap L2, or FN + L1 | Swaps the screens |
 | FN + R1 | Switches between both screens and one big screen |
+| FN + Select | Switches the D-pad between D-pad, circle pad and touch cursor, for handhelds short of sticks |
+
+On a handheld with no FN, L3 does what FN does in these.
 
 ## The menu
 
 - **Display:** screen layout, smooth scaling, frame interpolation, fps and
   temperature in the bottom right corner, battery and a 12-hour clock in
-  the bottom left
+  the bottom left, and rotation for a screen that shows the picture the
+  wrong way round
 - **Performance:** frame cap (20, 30 or 60) and power (saver, balanced,
   performance)
 - **This game:** options from the game's profile
 - **Controls:** touch cursor speed, Nintendo or Xbox button layout, left
-  stick as circle pad or D-pad, tilt reversed left and right or up and down
+  stick as circle pad or D-pad, D-pad as itself, circle pad or touch
+  cursor, tilt reversed left and right or up and down
 - **Game:** resume, advanced settings, reset, quit
 
 The selected setting's help shows at the bottom of the menu.
@@ -162,7 +167,7 @@ frames, and it is off by default.
 
 **Advanced settings** are saved per game. They switch the engine's speed
 hacks and graphics, CPU and loading options for a game that doesn't run or
-look right. **Most compatible** turns off every speed hack a game could
+look right, and set the console language and region the game is told. **Most compatible** turns off every speed hack a game could
 trip over in one go; if that fixes it, turn them back on one at a time to
 find the culprit. Settings under a "requires restart" heading take effect
 after **Restart game**, and **Reset to defaults** goes back to what the
