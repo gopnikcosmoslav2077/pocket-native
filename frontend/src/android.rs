@@ -125,7 +125,16 @@ fn set_up(files: &Path, data: &Path) {
     std::env::set_var("XDG_CACHE_HOME", files.join("cache"));
     // data/env.txt, NAME=value a line, sets the switches a shell would, for
     // trying one without a new build: ZAKURO_HOST_PROFILE=1800,600 and the like
-    if let Ok(text) = std::fs::read_to_string(data.join("env.txt")) {
+    let env = data.join("env.txt");
+    let read = std::fs::read_to_string(&env);
+    if let Err(error) = &read {
+        // one adb wrote as root with no read for others, which the app may
+        // not open: the log says so rather than nothing
+        if env.exists() {
+            let _ = SWITCHES.set(vec![format!("none, it could not be read ({error}); adb shell chmod 666 it")]);
+        }
+    }
+    if let Ok(text) = read {
         let mut taken = Vec::new();
         for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
             if let Some((name, value)) = line.split_once('=') {
