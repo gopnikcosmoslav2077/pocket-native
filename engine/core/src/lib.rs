@@ -762,6 +762,7 @@ impl System {
 
     /// waits for the GPU thread to finish everything given to it, so the
     /// GPU's state can be looked at, and raises what it finished.
+    #[track_caller]
     pub fn wait_gpu(&mut self) {
         let Some(queue) = &self.gpu_queue else { return };
         if queue.pending.load(Ordering::Acquire) > 0 {
@@ -770,7 +771,9 @@ impl System {
             while queue.pending.load(Ordering::Acquire) > 0 {
                 pause(&mut tries);
             }
-            GPU_WAITED.fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+            let waited = start.elapsed().as_micros() as u64;
+            GPU_WAITED.fetch_add(waited, Ordering::Relaxed);
+            count_wait(std::panic::Location::caller(), waited);
         }
         self.gpu_interrupts();
     }
@@ -882,12 +885,14 @@ impl System {
 
     /// makes guest memory hold what the host GPU drew over a range, before
     /// something other than a draw reads or writes it.
+    #[track_caller]
     pub fn sync_gpu(&mut self, addr: u32, len: u32) {
         self.sync_gpu_from(addr, len, "other");
     }
 
     /// sync_gpu, counted by what asked for it, for the log: a sync that has
     /// to read a drawing back stalls the GPU.
+    #[track_caller]
     pub fn sync_gpu_from(&mut self, addr: u32, len: u32, from: &'static str) {
         count_sync(from);
         self.wait_gpu();
@@ -901,6 +906,7 @@ impl System {
 
     /// lets the GPU know a range is about to be written whole: what it drew
     /// there is dropped rather than read back.
+    #[track_caller]
     pub fn overwrite_gpu(&mut self, addr: u32, len: u32, from: &'static str) {
         count_sync(from);
         self.wait_gpu();
@@ -911,6 +917,7 @@ impl System {
 
     /// copies guest memory once the GPU finished what it was given, raising
     /// the DMA interrupt.
+    #[track_caller]
     pub fn dma(&mut self, source: u32, dest: u32, size: u32) {
         self.sync_gpu_from(source, size, "dma");
         self.overwrite_gpu(dest, size, "dma into");
@@ -965,6 +972,7 @@ impl System {
     }
 
     /// the nine words gsp::ImportDisplayCaptureInfo returns.
+    #[track_caller]
     pub fn display_capture_info(&mut self) -> [u32; 9] {
         self.wait_gpu();
         let top = self.gpu.framebuffers[0];
@@ -986,6 +994,7 @@ impl System {
     /// width and height. a picture the GPU did not draw, or the CPU changed
     /// since, is the console's own grown to it, so the size stays the same
     /// from frame to frame.
+    #[track_caller]
     pub fn read_screen_scaled(&mut self, screen: zakuro_common::Screen) -> Screen {
         self.wait_gpu();
         let (width, height) = (screen.width(), screen.height());
@@ -1078,6 +1087,7 @@ impl System {
     }
 
     /// reads one screen into a straight RGBA8 buffer for presentation.
+    #[track_caller]
     pub fn read_screen(&mut self, screen: zakuro_common::Screen) -> Vec<u8> {
         self.wait_gpu();
         let mut guest = GuestMemory { linear_base: self.kernel.linear_base, memory: &mut self.memory };
@@ -1296,6 +1306,30 @@ type GpuJob = Box<dyn FnOnce() + Send>;
 
 /// microseconds the CPU's thread spent waiting on the GPU thread.
 pub static GPU_WAITED: AtomicU64 = AtomicU64::new(0);
+
+/// where the game thread waited for the GPU thread, how often and how long,
+/// in the log every few seconds of waiting, for telling what holds a game
+/// back when its threads are neither of them busy.
+fn count_wait(at: &'static std::panic::Location<'static>, micros: u64) {
+    static WAITS: std::sync::Mutex<(Vec<(&'static std::panic::Location<'static>, u64, u64)>, u64)> = std::sync::Mutex::new((Vec::new(), 0));
+    let mut waits = WAITS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (sites, total) = &mut *waits;
+    match sites.iter_mut().find(|(site, ..)| std::ptr::eq(*site, at)) {
+        Some((_, count, time)) => {
+            *count += 1;
+            *time += micros;
+        }
+        None => sites.push((at, 1, micros)),
+    }
+    *total += micros;
+    if *total >= 2_000_000 {
+        sites.sort_by_key(|&(_, _, time)| std::cmp::Reverse(time));
+        let line: Vec<String> = sites.iter().take(6).map(|(site, count, time)| format!("{}:{} {count}x {}ms", site.file().rsplit('/').next().unwrap_or(""), site.line(), time / 1000)).collect();
+        log::info!("waits on the gpu thread: {}", line.join(", "));
+        sites.clear();
+        *total = 0;
+    }
+}
 
 /// how many times each thing asked for the GPU's drawings to be in memory,
 /// logged every few hundred, for telling what stalls the GPU in a game.
