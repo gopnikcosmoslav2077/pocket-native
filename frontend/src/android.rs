@@ -115,6 +115,18 @@ fn set_up(files: &Path, data: &Path) {
     if let Ok(rules) = std::fs::read_to_string(drops) {
         std::env::set_var("ZAKURO_DROP_DRAWS", rules.trim());
     }
+    // the temporary directory, where profiles and screenshots go, is the
+    // data directory: an app may not write the system's
+    std::env::set_var("TMPDIR", data);
+    // data/env.txt, NAME=value a line, sets the switches a shell would, for
+    // trying one without a new build: ZAKURO_HOST_PROFILE=1800,600 and the like
+    if let Ok(text) = std::fs::read_to_string(data.join("env.txt")) {
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
+            if let Some((name, value)) = line.split_once('=') {
+                std::env::set_var(name.trim(), value.trim());
+            }
+        }
+    }
 }
 
 /// one event into the pad, handled when it was the gamepad's or the touch
