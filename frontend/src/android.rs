@@ -14,6 +14,8 @@
 //! the screens goes there by itself: SecondScreen.java shows a Presentation
 //! on it, whose surface and touches come back here through JNI. A file named
 //! one-screen in the files directory keeps both screens on the first display.
+//! Under GammaOS's DualStack the window is both panels stacked, and the
+//! screens go on its halves, with no Presentation.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -57,13 +59,20 @@ fn android_main(app: AndroidApp) {
     }
     let window = window.unwrap();
     let (window_width, window_height) = (window.width(), window.height());
+    // a window half again taller than wide is both panels stacked, as
+    // GammaOS's DualStack gives it to an app on its list: 640x960 on the RG
+    // DS, where the app's own is 640x480
+    let stacked = window_height * 4 > window_width * 5;
+    zakuro_gpu::set_stacked(stacked);
     zakuro_gpu::set_window(window.ptr().as_ptr().cast());
     for axis in [Axis::Z, Axis::Rz, Axis::Rx, Axis::Ry, Axis::HatX, Axis::HatY, Axis::Ltrigger, Axis::Rtrigger, Axis::Gas, Axis::Brake] {
         app.enable_motion_axis(axis);
     }
 
     let pad = input::share();
-    if !files.join("one-screen").exists() {
+    if stacked {
+        log::info!("a {window_width}x{window_height} window, both panels stacked by GammaOS's DualStack");
+    } else if !files.join("one-screen").exists() {
         match show_second_screen(&app) {
             Ok(true) => log::info!("asked for the second screen"),
             Ok(false) => log::info!("no second display, both screens on this one"),

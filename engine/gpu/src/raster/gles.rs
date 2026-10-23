@@ -1000,6 +1000,23 @@ extern "C" fn flipped(_fd: i32, sequence: u32, seconds: u32, microseconds: u32, 
 /// activity's, that the screens go to in place of the panel, null for none.
 static WINDOW: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
+/// whether the window is both of a dual-screen handheld's panels stacked,
+/// as GammaOS's DualStack gives an app them, its top half on the top panel
+/// and its bottom half on the bottom one.
+static STACKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// says the window set_window gives is two panels stacked, before the
+/// renderer starts: it is never turned as a portrait panel would be, and the
+/// menu goes on the top half.
+pub fn set_stacked(stacked: bool) {
+    STACKED.store(stacked, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// whether the window is two panels stacked.
+pub fn stacked() -> bool {
+    STACKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// a second native window, on a second display, that one of the screens
 /// goes to by itself, null for none, and the one the GL thread has a
 /// surface on, which set_second_window waits to see go before its window
@@ -1532,6 +1549,10 @@ struct Canvas {
 /// nothing, 90 turns clockwise, 270 counter clockwise, and unset turns
 /// clockwise on a portrait panel.
 fn panel_turn(width: i32, height: i32) -> Option<i32> {
+    // two landscape panels stacked are taller than wide, and are not turned
+    if stacked() {
+        return None;
+    }
     static CHOICE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     let choice = CHOICE.get_or_init(|| std::env::var("ZAKURO_PANEL_ROTATE").ok());
     match choice.as_deref() {
@@ -1696,7 +1717,9 @@ unsafe fn draw_parts(
                         (texture, screen, 0, area, smooth)
                     }
                     Part::Overlay(overlay) => {
-                        draw_overlay(gl, panel, &overlay, height, fit.inset((layout.0 - 640) / 2, (layout.1 - 480) / 2))?;
+                        // the menu in the middle, or on the top panel of two stacked
+                        let down = if stacked() { 0 } else { (layout.1 - 480) / 2 };
+                        draw_overlay(gl, panel, &overlay, height, fit.inset((layout.0 - 640) / 2, down))?;
                         continue;
                     }
                     Part::Pixels { index, pixels, width, height, area, smooth } => {

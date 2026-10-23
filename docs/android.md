@@ -96,6 +96,12 @@ How it behaves for now:
   menu's layouts, where touching the bottom screen touches the 3DS's
 - the bottom display's window never takes the buttons from the game, so a
   touch there does not cost the pad its focus
+- with the game's app on GammaOS's DualStack list (Settings, the per-app
+  Dual-Stack toggles), GammaOS gives it one window over both panels,
+  640x960, which it splits between them itself: the app sees the tall
+  window, opens no second window of its own, and puts a screen on each
+  half, one surface and one swap a frame rather than two, the menu on the
+  top panel. Swap screens and Fill the display work as they do otherwise
 - the menu opens with L3 and R2 together; FN is the RG button, which the
   system may keep for itself
 - A, B, X and Y are what Android calls them; if they come out swapped, the
