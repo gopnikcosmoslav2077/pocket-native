@@ -54,7 +54,6 @@ for rom in "${roms[@]}"; do
         args+=("/keys/$(basename "$rom_keys")")
     fi
     "$engine" run --rm "${user[@]}" "${mounts[@]}" -e CARGO_HOME=/work/cargo -e CARGO_TARGET_DIR=/work/target -e HOME=/work \
-        -e RECOMP_HINT_LABELS="${RECOMP_HINT_LABELS:-}" \
         "$image" bash /src/scripts/android/inside.sh "${args[@]}" || { failed+=("$rom"); continue; }
     if [ $install = 1 ]; then
         bash "$repo/scripts/android/install.sh" "$(cat "$out/.work-android/last-built")" --out "$out" || failed+=("$rom (install)")
