@@ -4018,7 +4018,7 @@ impl Gles {
         let Some((addr, size, lead)) = self.surfaces.iter().find_map(|s| {
             let offset = s.addr.checked_sub(t.input).filter(|&offset| offset > 0 && offset % tile_rows == 0)?;
             let lead = offset / tile_rows * 8;
-            let fits = s.kind == input_kind && s.tiled && s.width == t.input_width && s.dirty.is_some() && lead < rows && lead % t.scale.1 == 0 && rows <= lead + s.height;
+            let fits = s.kind == input_kind && s.tiled && s.width == t.input_width && s.dirty.is_some() && lead < rows && lead.is_multiple_of(t.scale.1) && rows <= lead + s.height;
             fits.then_some((s.addr, (s.width, s.height), lead))
         }) else {
             return Ok(false);
