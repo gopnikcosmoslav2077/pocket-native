@@ -2,3 +2,7 @@ name = "Monster Hunter 4 Ultimate"
 
 [advanced]
 realtime_gpu = true
+# with real-time GPU, events have to land on time for the game to catch the
+# end of each frame: without, it misses most of them and falls to 8 fps in
+# the village on the RG DS, with it holds 27
+exact_events = true
