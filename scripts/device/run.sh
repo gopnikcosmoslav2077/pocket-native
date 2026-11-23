@@ -7,10 +7,10 @@ dir="$(cd "$(dirname "$0")" && pwd)"
 game="$dir/games/$1"
 rom="${2:-$game/game.3ds}"
 data="$game/data"
-mkdir -p "$data" "$dir/config"
+mkdir -p "$data" "$dir/config" "$dir/borders"
 
 export ZAKURO_FAST=1 ZAKURO_KMS=1 ZAKURO_DATA="$data" ZAKURO_RECOMPILED="$game/title.so" ZAKURO_SHADER_MANIFEST="$data/shaders.txt" ZAKURO_VERTEX_LIST="$game/vertex/vertex.txt"
-export POCKET_NATIVE_TITLES="$dir/titles" POCKET_NATIVE_POWER="$dir/power.sh" POCKET_NATIVE_CONFIG="$dir/config"
+export POCKET_NATIVE_TITLES="$dir/titles" POCKET_NATIVE_POWER="$dir/power.sh" POCKET_NATIVE_CONFIG="$dir/config" POCKET_NATIVE_BORDERS="$dir/borders"
 # draws to leave out besides the game's options, as ZAKURO_DROP_DRAWS takes them
 [ -f "$data/drops.txt" ] && export ZAKURO_DROP_DRAWS="$(cat "$data/drops.txt")"
 

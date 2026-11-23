@@ -900,6 +900,73 @@ pub(super) unsafe fn draw_overlay(gl: &glow::Context, panel: &mut Panel, overlay
     Ok(())
 }
 
+/// what set_border last set, and how many times it has been set, which
+/// the border's texture is named by.
+static BORDER: std::sync::Mutex<(u64, Option<std::sync::Arc<crate::Border>>)> = std::sync::Mutex::new((0, None));
+
+/// the picture drawn behind the screens from the next frame, filling the
+/// panel, or none for black.
+pub fn set_border(border: Option<crate::Border>) {
+    let mut set = BORDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    set.0 += 1;
+    set.1 = border.map(std::sync::Arc::new);
+}
+
+/// draws the border over the whole of the framebuffer bound, width by
+/// height, for the panel (slot 0) or the second window (1), its texture
+/// made the first time and again when the border or, for the stock one, the
+/// size changes.
+/// SAFETY: on the GL thread, with the framebuffer bound
+pub(super) unsafe fn draw_border(gl: &glow::Context, panel: &mut Panel, slot: usize, (width, height): (i32, i32)) -> Result<(), String> {
+    let (version, border) = {
+        let set = BORDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        (set.0, set.1.clone())
+    };
+    let Some(border) = border else {
+        if let Some(id) = panel.border[slot].take() {
+            if !panel.border.contains(&Some(id)) {
+                if let Some((texture, _)) = panel.overlay_textures.remove(&id) {
+                    gl.delete_texture(texture);
+                }
+            }
+        }
+        return Ok(());
+    };
+    // named apart from the frontend's, which count up from 1, and by the
+    // panel's size for the stock one, made at it
+    let sized = matches!(*border, crate::Border::Stock).then_some((width as u64) << 16 | height as u64).unwrap_or(0);
+    let id = 1 << 63 | version << 32 | sized;
+    let mut overlay = crate::Overlay { textures: Vec::new(), meshes: Vec::new(), free: Vec::new(), whole: true, bottom: false };
+    let size = match &*border {
+        crate::Border::Stock => [width.max(1) as u32, height.max(1) as u32],
+        crate::Border::Picture { width, height, .. } => [*width, *height],
+    };
+    if !panel.overlay_textures.contains_key(&id) {
+        let pixels = match &*border {
+            crate::Border::Stock => crate::border::stock_border(size[0], size[1]),
+            crate::Border::Picture { pixels, .. } => pixels.clone(),
+        };
+        overlay.textures.push(crate::OverlayTexture { id, offset: None, size, pixels, linear: true });
+    }
+    // the one this slot drew before goes, unless the other slot draws it,
+    // a picture's being the same texture on both
+    if let Some(old) = panel.border[slot].replace(id).filter(|&old| old != id) {
+        if !panel.border.contains(&Some(old)) {
+            overlay.free.push(old);
+        }
+    }
+    let [left, top, right, bottom] = crate::border::covering((size[0], size[1]), (width, height));
+    let (w, h) = (width as f32, height as f32);
+    let corner = |x: f32, y: f32, u: f32, v: f32| crate::OverlayVertex { position: [x, y], uv: [u, v], color: [255; 4] };
+    overlay.meshes.push(crate::OverlayMesh {
+        texture: id,
+        clip: [0, 0, width as u32, height as u32],
+        vertices: vec![corner(0.0, 0.0, left, top), corner(w, 0.0, right, top), corner(w, h, right, bottom), corner(0.0, h, left, bottom)],
+        indices: vec![0, 1, 2, 0, 2, 3],
+    });
+    draw_overlay(gl, panel, &overlay, height, Fit { scale: 1.0, left: 0.0, top: 0.0 }, (width, height))
+}
+
 /// a landscape canvas the screens are laid out in and drawn into, which is
 /// turned a quarter onto a portrait panel and fitted with black bars.
 #[derive(Clone, Copy)]
@@ -1018,6 +1085,9 @@ pub(super) unsafe fn draw_second(
     gl.color_mask(true, true, true, true);
     gl.clear_color(0.0, 0.0, 0.0, 1.0);
     gl.clear(glow::COLOR_BUFFER_BIT);
+    if let Err(error) = draw_border(gl, panel, 1, (width, height)) {
+        log::warn!("could not draw the border on the second window, {error}");
+    }
     gl.use_program(Some(program));
     gl.bind_vertex_array(Some(empty));
     gl.active_texture(glow::TEXTURE0);
@@ -1249,6 +1319,7 @@ pub(super) fn show(gl: GlRef, parts: Vec<Part>, frames: u32) -> Result<(), Strin
             gl.color_mask(true, true, true, true);
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
+            draw_border(&gl, panel, 0, (width, height))?;
             gl.use_program(Some(program));
             let linear = match panel.linear {
                 Some(linear) => linear,
@@ -1402,6 +1473,9 @@ pub(super) struct Panel {
     /// the overlay's program, vertex array and buffers, and its textures.
     pub(super) overlay: Option<(glow::Program, glow::VertexArray, glow::Buffer, glow::Buffer)>,
     pub(super) overlay_textures: HashMap<u64, (glow::Texture, [u32; 2])>,
+    /// the border's texture among the overlay's, by its id, the panel's
+    /// and the second window's.
+    pub(super) border: [Option<u64>; 2],
     pub(super) between: Between,
     /// the landscape canvas a portrait panel's picture is drawn into first.
     pub(super) canvas: Option<Canvas>,

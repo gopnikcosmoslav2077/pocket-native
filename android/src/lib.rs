@@ -161,6 +161,13 @@ fn set_up(own: &Path, folder: &Path, data: &Path) {
     std::env::set_var("ZAKURO_VERTEX_LIST", folder.join("vertex").join("vertex.txt"));
     std::env::set_var("POCKET_NATIVE_TITLES", own.join("titles"));
     std::env::set_var("POCKET_NATIVE_CONFIG", own.join("config"));
+    // borders beside the games, in Android/data/<the app>/files/borders,
+    // where a PC over USB puts them
+    if let Some(files) = folder.parent().and_then(std::path::Path::parent) {
+        let borders = files.join("borders");
+        let _ = std::fs::create_dir_all(&borders);
+        std::env::set_var("POCKET_NATIVE_BORDERS", borders);
+    }
     let drops = data.join("drops.txt");
     if let Ok(rules) = std::fs::read_to_string(drops) {
         std::env::set_var("ZAKURO_DROP_DRAWS", rules.trim());

@@ -36,7 +36,7 @@ use display::*;
 use prepare::Precache;
 use programs::*;
 use sources::*;
-pub use display::{layout_scale, layout_size, panel_timing, second_window, set_second_shows_top, set_second_stretched, set_second_window, set_stacked, set_top_crop, set_window, stacked};
+pub use display::{layout_scale, layout_size, panel_timing, second_window, set_border, set_second_shows_top, set_second_stretched, set_second_window, set_stacked, set_top_crop, set_window, stacked};
 pub use programs::{compiling, compiling_stand_ins, note_compiler_crash, preparing, skip_preparing, waited_draws};
 pub(crate) use programs::{COMPILING, WAITED};
 
@@ -1398,7 +1398,7 @@ impl Worker {
                     if let Some(output) = output {
                         let ((width, height), turn) = panel_shape(&output);
                         set_layout(if turn.is_some() { (height, width) } else { (width, height) });
-                        PANEL.with(|screen| *screen.borrow_mut() = Some(Panel { egl, output, program: None, textures: [None, None], empty: None, linear: None, overlay: None, overlay_textures: HashMap::new(), between: Between::default(), canvas: None, second: None }));
+                        PANEL.with(|screen| *screen.borrow_mut() = Some(Panel { egl, output, program: None, textures: [None, None], empty: None, linear: None, overlay: None, overlay_textures: HashMap::new(), border: [None, None], between: Between::default(), canvas: None, second: None }));
                     }
                     let gl: &'static glow::Context = Box::leak(Box::new(gl));
                     GL_CONTEXT.set(Some(gl));
@@ -5075,6 +5075,52 @@ mod tests {
             failures
         });
         assert!(failures.is_empty(), "pipelines that did not validate: {failures:#?}");
+    }
+
+    /// with ZAKURO_PANEL_SHOT=dir/border-%.ppm, draws a frame with the
+    /// stock border and one with a picture behind a top screen 400x240 in
+    /// the middle, for a look at them; otherwise only that they draw.
+    #[test]
+    fn borders_draw_behind_the_screens() {
+        let mut gles = match Gles::new() {
+            Ok(gles) => gles,
+            Err(error) => {
+                eprintln!("no OpenGL ES here, skipped: {error}");
+                return;
+            }
+        };
+        let (width, height) = display::layout_size();
+        let (width, height) = (width as i32, height as i32);
+        // the top screen at its shape, fitted into the layout, bars at its
+        // sides on a wide panel and above and below it on a 4:3 one
+        let wide = width.min(height * 5 / 3) * 3 / 4;
+        let tall = wide * 3 / 5;
+        let area = [(width - wide) / 2, (height - tall) / 2, wide, tall];
+        let screen: Vec<u8> = (0..400 * 240).flat_map(|i| [((i % 400) * 255 / 400) as u8, ((i / 400) * 255 / 240) as u8, 160, 255]).collect();
+        // a picture: an orange frame around a teal middle, 1280x720
+        let picture: Vec<u8> = (0..1280 * 720)
+            .flat_map(|i| {
+                let (x, y) = (i % 1280, i / 1280);
+                let edge = x < 40 || x >= 1240 || y < 40 || y >= 680;
+                if edge { [230, 120, 30, 255] } else { [20, 110, 120, 255] }
+            })
+            .collect();
+        for border in [Some(crate::Border::Stock), Some(crate::Border::Picture { pixels: picture, width: 1280, height: 720 }), None] {
+            set_border(border);
+            gles.present([Some((crate::PanelImage::Pixels(screen.clone(), 400, 240), area)), None], None, Vec::new(), true, false, 1);
+            gles.worker.run(|| ());
+        }
+        let corner = gles.worker.run(|| {
+            let gl = GL_CONTEXT.with(|gl| gl.get()).expect("the GL thread's context");
+            let mut pixel = [0u8; 4];
+            // SAFETY: on the GL thread, the panel's framebuffer readable
+            unsafe { gl.read_pixels(0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut pixel))) };
+            pixel
+        });
+        // with the border gone, the bars are black again
+        if std::env::var_os("ZAKURO_PANEL_SHOT").is_some() {
+            assert_eq!(corner, [0, 0, 0, 255]);
+        }
     }
 
     #[test]

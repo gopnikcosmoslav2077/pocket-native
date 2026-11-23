@@ -156,6 +156,9 @@ pub struct Settings {
     pub show_building: bool,
     /// the word in the top right corner while the game saves.
     pub show_saving: bool,
+    /// the picture behind the screens: empty for none, stock, or a PNG's
+    /// name in the borders folder.
+    pub border: String,
     /// the picture turned onto a sideways panel, as ZAKURO_PANEL_ROTATE
     /// does, which Auto leaves to.
     pub rotation: Rotation,
@@ -195,6 +198,7 @@ impl Default for Settings {
             show_clock: true,
             show_building: true,
             show_saving: true,
+            border: String::new(),
             rotation: Rotation::Auto,
             frame_cap: 30,
             power: Power::Performance,

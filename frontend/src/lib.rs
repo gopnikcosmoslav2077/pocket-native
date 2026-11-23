@@ -15,6 +15,7 @@
 //! pocket-native --probe <rom> [frames] tries a game as fast as it runs and
 //! writes a report of how it went, see probe.rs.
 
+mod border;
 mod busy;
 mod crash;
 mod font;
@@ -129,6 +130,7 @@ pub fn run(mut args: Vec<String>) {
     advanced.export();
     let settings_path = settings::config_dir().join("settings.toml");
     let mut settings: Settings = settings::load(&settings_path);
+    border::apply(&settings.border);
     // the layout this game was left in, over the one used last
     (settings.layout, settings.swapped) = (game.layout.unwrap_or(settings.layout), game.swapped.unwrap_or(settings.swapped));
     // the menu's rotation over ZAKURO_PANEL_ROTATE, before the panel starts
@@ -415,6 +417,7 @@ pub fn run(mut args: Vec<String>) {
                 Action::None => {}
                 Action::Redraw => menu_drawn = false,
                 Action::Changed => {
+                    border::apply(&settings.border);
                     apply_options(&mut system, &game, &profile, &base_drops);
                     let advanced = Advanced::of(&game, &profile);
                     (most_skipped, shown_only) = (fixed_skip.unwrap_or(advanced.frame_skip), advanced.shown_only);

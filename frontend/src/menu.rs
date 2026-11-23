@@ -25,6 +25,7 @@ const ROW: f32 = 19.0;
 enum Field {
     Layout,
     Aspect,
+    Border,
     Resolution,
     Smooth,
     Stretch,
@@ -184,7 +185,7 @@ fn sections(page: Page, profile: &Profile) -> Vec<(&'static str, Vec<Field>)> {
     let only = |fields: Vec<Field>| fields.into_iter().filter(|&field| useful(field)).collect();
     match page {
         Page::Main => vec![
-            ("Display", only(vec![Field::Layout, Field::Aspect, Field::Resolution, Field::Smooth, Field::Stretch, Field::Interpolate, Field::ShowFps, Field::ShowClock, Field::ShowBuilding, Field::ShowSaving, Field::Rotation])),
+            ("Display", only(vec![Field::Layout, Field::Aspect, Field::Border, Field::Resolution, Field::Smooth, Field::Stretch, Field::Interpolate, Field::ShowFps, Field::ShowClock, Field::ShowBuilding, Field::ShowSaving, Field::Rotation])),
             ("Performance", only(vec![Field::FrameCap, Field::Power])),
             ("This game", (0..profile.options.len()).map(Field::Option).collect()),
             ("Controls", only(vec![Field::TouchSpeed, Field::Cursor, Field::Buttons, Field::LeftStick, Field::Dpad, Field::RightStick, Field::ReverseTiltX, Field::ReverseTiltY, Field::TouchControls, Field::EditControls, Field::Mapping])),
@@ -231,6 +232,7 @@ fn label(field: Field, settings: &Settings, game: &GameSettings, profile: &Profi
             }
             .into(),
         ),
+        Field::Border => ("Border", crate::border::label(&settings.border)),
         Field::Resolution => ("Resolution", if settings.resolution == 1.0 { "Native".into() } else { format!("{}x", settings.resolution) }),
         Field::Smooth => ("Smooth scaling", if settings.smooth { "On" } else { "Off" }.into()),
         Field::Stretch => (
@@ -326,6 +328,7 @@ fn change(field: Field, by: isize, settings: &mut Settings, game: &mut GameSetti
             let at = Stretch::ALL.iter().position(|&stretch| stretch == settings.stretched).unwrap_or(0) as isize;
             settings.stretched = Stretch::ALL[(at + by).rem_euclid(Stretch::ALL.len() as isize) as usize];
         }
+        Field::Border => settings.border = crate::border::step(&settings.border, by),
         Field::Interpolate => settings.interpolate_to = step(&[0, 30, 60], settings.interpolate_to, by),
         Field::ShowFps => settings.show_fps = !settings.show_fps,
         Field::ShowClock => settings.show_clock = !settings.show_clock,
@@ -381,6 +384,7 @@ fn help(field: Field, profile: &Profile) -> &str {
     match field {
         Field::Layout => "Where the screens go. A tap of L2 swaps them, FN or L3 with R1 switch to one big screen.",
         Field::Aspect => "The screens' shape: as on the 3DS, by whole pixels, 4:3, 16:10, 16:9, stretched, or the top one's sides cropped.",
+        Field::Border => "A picture behind the screens, over the bars around them. Your own go in the borders folder, as PNGs.",
         Field::Resolution => "How sharp the 3D is drawn, times the 3DS's own. Higher takes more GPU. Restart the game for it.",
         Field::Smooth => "Smooths the picture as it is scaled up. Off is sharper, with uneven pixels.",
         Field::Stretch => "With a screen on each display, the screens stretched over theirs: no bars, but out of shape.",

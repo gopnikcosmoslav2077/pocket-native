@@ -168,9 +168,17 @@ the device upright and sideways.
 Every setting has a line of help at the bottom of the menu.
 
 - **Display:** layout (big top, side by side, one screen, original size
-  and more), aspect ratio, render resolution, smooth scaling, frame
-  interpolation, fps counter, clock and battery, shader and saving popups,
-  rotation
+  and more), aspect ratio, a border behind the screens, render resolution,
+  smooth scaling, frame interpolation, fps counter, clock and battery,
+  shader and saving popups, rotation
+
+**Border** fills the bars around the screens with a picture: the stock
+one, or your own PNGs. Put them in `borders`, beside `config` in the
+`pocket-native` folder on a Linux handheld, or in
+`Android/data/io.github.pocketnative/files/borders` on Android, which a PC
+reaches over USB. A picture covers the whole display, cut at its sides or
+top and bottom to the display's shape, so one the display's size fits it
+exactly.
 - **Performance:** frame cap (20, 30 or 60) and power (saver, balanced,
   performance)
 - **This game:** options from the game's profile, where it has some
