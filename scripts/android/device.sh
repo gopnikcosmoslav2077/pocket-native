@@ -33,7 +33,7 @@ folders() {
 }
 
 name_of() {
-    adb shell "cat '$1/name.txt' 2>/dev/null" | tr -d '\r' | head -1
+    adb shell "cat '$1/name.txt' 2>/dev/null" </dev/null | tr -d '\r' | head -1
 }
 
 # the folder of the one game whose name or title id holds $1, any case
